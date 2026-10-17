@@ -159,5 +159,25 @@ locals {
       service_account = "aws-load-balancer-controller"
       policy_json     = jsonencode(jsondecode(file("${path.module}/iam-policies/aws-load-balancer-controller.json")))
     }
+    # Syncs Secrets Manager entries under <project>-<env>/ into Kubernetes
+    # Secrets. Can't read anything outside that prefix (e.g. Argo CD's
+    # GitHub App credentials).
+    "external-secrets" = {
+      namespace       = "external-secrets"
+      service_account = "external-secrets"
+      policy_json     = data.aws_iam_policy_document.external_secrets.json
+    }
   }
+}
+
+# --- Application secrets --------------------------------------------------
+# Generated credentials that only ever exist in Secrets Manager and in the
+# cluster (via External Secrets), never in Git or Terraform state.
+
+module "payment_api_db_secret" {
+  source = "./modules/app-secret"
+
+  name        = "${local.name}/payment-api/db"
+  description = "payment-api Postgres credentials"
+  username    = "payments"
 }

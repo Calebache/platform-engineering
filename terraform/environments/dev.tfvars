@@ -32,7 +32,7 @@ cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
 cluster_admin_principal_arns         = []
 
 # ECR
-ecr_repositories = ["mcp-server", "sre-agent", "demo-app"]
+ecr_repositories = ["mcp-server", "sre-agent", "payment-api"]
 ecr_force_delete = true
 
 # Audit

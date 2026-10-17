@@ -69,6 +69,20 @@ data "aws_iam_policy_document" "sre_agent" {
   }
 }
 
+# --- external-secrets -----------------------------------------------------
+# Read-only, and only for this environment's prefix.
+
+data "aws_iam_policy_document" "external_secrets" {
+  statement {
+    sid = "ReadEnvironmentSecrets"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = ["arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${local.name}/*"]
+  }
+}
+
 # --- external-dns ---------------------------------------------------------
 
 data "aws_iam_policy_document" "external_dns" {
