@@ -1,35 +1,57 @@
 #!/usr/bin/env bash
-# Verifies Argo CD's read-only GitHub App and stores its credentials in AWS
-# Secrets Manager. Argo CD uses them to mint installation tokens that expire
-# after one hour, so no long-lived credential is ever sent to GitHub.
+# Verifies a GitHub App's permissions and stores its credentials in AWS
+# Secrets Manager. Consumers mint installation tokens that expire after one
+# hour, so no long-lived credential is ever sent to GitHub.
 #
-# Like the state bucket, the secret lives outside Terraform and outlives every
-# environment. Terraform reads it as an ephemeral value and writes it into the
-# cluster with a write-only attribute, so it never lands in state.
+# Two apps use this, each with exactly the permissions it needs:
 #
-# One-time GitHub setup (UI, ~3 minutes):
+#   app       consumer            PROFILE   repository permissions       secret
+#   read-only Argo CD             argocd    Contents: Read               agentic-sre/argocd/github-app
+#   PR writer MCP server          mcp       Contents + Pull requests:    agentic-sre-dev/mcp-server/github-app
+#                                           Read and write
+#
+# The secret lives outside Terraform and outlives every environment. Argo CD's
+# is read by Terraform as an ephemeral value; the MCP server's is synced by
+# External Secrets (hence the agentic-sre-dev/ prefix its role can read).
+#
+# One-time GitHub setup per app (UI, ~3 minutes):
 #   1. GitHub -> Settings -> Developer settings -> GitHub Apps -> New GitHub App
-#        - Name: e.g. calebache-argocd-readonly (must be globally unique)
+#        - Name: globally unique, e.g. calebache-argocd-readonly / calebache-sre-mcp
 #        - Homepage URL: https://github.com/Calebache/platform-engineering
 #        - Webhook: untick "Active"
-#        - Repository permissions: Contents = Read-only (Metadata = Read-only
-#          is added automatically). Nothing else.
+#        - Repository permissions: exactly the ones in the table above
+#          (Metadata: Read-only is added automatically). Nothing else.
 #        - Where can this app be installed: Only on this account
 #   2. On the app page, note the App ID, then "Generate a private key" (.pem).
 #   3. "Install App" -> Only select repositories -> platform-engineering.
 #
 # Usage:
-#   APP_ID=123456 PEM_FILE=~/Downloads/app.private-key.pem scripts/store-argocd-github-app.sh
+#   PROFILE=argocd APP_ID=123456 PEM_FILE=~/Downloads/a.pem scripts/store-github-app.sh
+#   PROFILE=mcp    APP_ID=234567 PEM_FILE=~/Downloads/b.pem scripts/store-github-app.sh
 #
-# Re-run with a new PEM_FILE to rotate the key, then bump
-# argocd_repo_secret_revision in the tfvars and apply. Delete the .pem file
-# from disk afterwards; Secrets Manager is the only copy that should remain.
+# The script refuses an app whose permissions differ from its profile.
+# Re-run with a new PEM_FILE to rotate the key (Argo CD: then bump
+# argocd_repo_secret_revision and apply; MCP server: External Secrets picks it
+# up within an hour, then restart the deployment). Delete the .pem afterwards;
+# Secrets Manager is the only copy that should remain.
 set -euo pipefail
 
 ACCOUNT_ID="${ACCOUNT_ID:-103544553431}"
 REGION="${REGION:-ca-central-1}"
 GITHUB_REPO="${GITHUB_REPO:-Calebache/platform-engineering}"
-SECRET_NAME="${SECRET_NAME:-agentic-sre/argocd/github-app}"
+PROFILE="${PROFILE:-argocd}"
+case "$PROFILE" in
+  argocd)
+    DEFAULT_SECRET="agentic-sre/argocd/github-app"
+    EXPECTED_PERMISSIONS="contents=read"
+    DESCRIPTION="Argo CD read-only GitHub App credentials" ;;
+  mcp)
+    DEFAULT_SECRET="agentic-sre-dev/mcp-server/github-app"
+    EXPECTED_PERMISSIONS="contents=write,pull_requests=write"
+    DESCRIPTION="MCP server GitHub App credentials (read repo, open PRs)" ;;
+  *) printf 'error: PROFILE must be argocd or mcp\n' >&2; exit 1 ;;
+esac
+SECRET_NAME="${SECRET_NAME:-$DEFAULT_SECRET}"
 APP_ID="${APP_ID:-}"
 PEM_FILE="${PEM_FILE:-}"
 
@@ -77,22 +99,24 @@ installation_id="$(gh_api GET "/repos/${GITHUB_REPO}/installation" "$jwt" | json
 log "Installation ID: $installation_id"
 
 # Mint one installation token to prove the credentials work and to check the
-# granted permissions are read-only, then revoke it immediately.
-log "Checking the app's permissions"
+# granted permissions are exactly the profile's, then revoke it immediately.
+log "Checking the app's permissions against profile '$PROFILE' ($EXPECTED_PERMISSIONS)"
 gh_api POST "/app/installations/${installation_id}/access_tokens" "$jwt" >"$workdir/token.json"
 probe_token="$(json_field token <"$workdir/token.json")"
 [[ -n "$probe_token" ]] || die "could not mint an installation token: $(cat "$workdir/token.json")"
-python3 -I - "$workdir/token.json" <<'EOF' || { gh_api DELETE /installation/token "$probe_token" >/dev/null; exit 1; }
+python3 -I - "$workdir/token.json" "$EXPECTED_PERMISSIONS" <<'PY' || { gh_api DELETE /installation/token "$probe_token" >/dev/null; exit 1; }
 import json, sys
 perms = json.load(open(sys.argv[1])).get("permissions", {})
-allowed = {"contents": "read", "metadata": "read"}
-extra = {k: v for k, v in perms.items() if allowed.get(k) != v}
-if perms.get("contents") != "read":
-    sys.exit("error: app needs Contents = Read-only (got %r)" % perms.get("contents"))
+expected = dict(p.split("=") for p in sys.argv[2].split(","))
+expected["metadata"] = "read"
+missing = {k: v for k, v in expected.items() if perms.get(k) != v}
+extra = {k: v for k, v in perms.items() if k not in expected}
+if missing:
+    sys.exit("error: app is missing permissions %s (has %s)" % (missing, perms))
 if extra:
-    sys.exit("error: app has more than read-only contents access: %s. Remove these permissions." % extra)
+    sys.exit("error: app has permissions beyond its profile: %s. Remove them." % extra)
 print("==> Permissions OK:", perms)
-EOF
+PY
 gh_api DELETE /installation/token "$probe_token" >/dev/null || true
 
 log "Writing credentials to $SECRET_NAME"
@@ -109,11 +133,11 @@ if aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET_NA
   aws secretsmanager put-secret-value --region "$REGION" \
     --secret-id "$SECRET_NAME" \
     --secret-string "file://$workdir/secret.json" >/dev/null
-  log "Stored a new version. Bump argocd_repo_secret_revision in the tfvars and apply."
+  log "Stored a new version (see the header for how each consumer picks it up)."
 else
   aws secretsmanager create-secret --region "$REGION" \
     --name "$SECRET_NAME" \
-    --description "Argo CD read-only GitHub App credentials (${GITHUB_REPO})" \
+    --description "${DESCRIPTION} (${GITHUB_REPO})" \
     --secret-string "file://$workdir/secret.json" >/dev/null
   log "Created secret."
 fi

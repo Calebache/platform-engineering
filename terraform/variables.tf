@@ -148,7 +148,7 @@ variable "argocd_apps_chart_version" {
 }
 
 variable "argocd_repo_secret_name" {
-  description = "Secrets Manager secret holding Argo CD's read-only GitHub App credentials (scripts/store-argocd-github-app.sh)."
+  description = "Secrets Manager secret holding Argo CD's read-only GitHub App credentials (scripts/store-github-app.sh (PROFILE=argocd))."
   type        = string
   default     = "agentic-sre/argocd/github-app"
 }

@@ -1,0 +1,7 @@
+*
+!go.mod
+!go.sum
+!*.go
+!policy/
+!prompts/
+*_test.go

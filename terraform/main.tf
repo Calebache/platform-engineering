@@ -84,7 +84,7 @@ module "github_oidc" {
   }
 }
 
-# Read-only GitHub App credentials stored by scripts/store-argocd-github-app.sh.
+# Read-only GitHub App credentials stored by scripts/store-github-app.sh (PROFILE=argocd).
 # Ephemeral: read at plan/apply time, never written to state or the plan file.
 ephemeral "aws_secretsmanager_secret_version" "argocd_github_app" {
   secret_id = var.argocd_repo_secret_name

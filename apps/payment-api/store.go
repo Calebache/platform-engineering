@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -97,14 +98,11 @@ func newPostgresStore(ctx context.Context, cfg dbConfig, logger *slog.Logger) (*
 
 func (s *postgresStore) Close() { s.pool.Close() }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS payments (
-	id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-	amount_cents bigint      NOT NULL CHECK (amount_cents > 0),
-	currency     char(3)     NOT NULL,
-	status       text        NOT NULL DEFAULT 'captured',
-	created_at   timestamptz NOT NULL DEFAULT now()
-)`
+// schema is applied idempotently on first use. The same file is what the MCP
+// server serves to the agent, so the documented and running schema can't drift.
+//
+//go:embed schema.sql
+var schema string
 
 func (s *postgresStore) ensureSchema(ctx context.Context) error {
 	s.mu.Lock()

@@ -14,7 +14,9 @@ Terraform follows a **root module + one module per resource type + per-environme
 - `terraform/modules/<type>/`: `network`, `eks`, `ecr`, `s3-bucket`, `github-oidc`, `pod-identity-role`, `argocd` and `app-secret`. Each has `main.tf`, `variables.tf`, `outputs.tf` and `versions.tf`. Put new resource types in a new module, not in the root. `pod-identity-role` binds one IAM role to one namespace/ServiceAccount; add a new workload identity as an entry in `local.workload_identities` in `main.tf`.
 - `terraform/environments/<env>.tfvars` sets an environment's values. `<env>.s3.tfbackend` sets its state key. To add an environment, copy both and change the values. Only the first environment in an account sets `create_github_oidc_provider = true`, and ECR repo names must not overlap within an account.
 - `scripts/bootstrap-state-bucket.sh` creates the S3 state bucket. Terraform deliberately **doesn't manage its own state bucket**, which avoids local state and the chicken-and-egg migration. The script is idempotent: re-running it re-applies versioning, encryption, public-access block, lifecycle and the TLS-only policy. Override with the `ACCOUNT_ID`, `REGION` and `BUCKET` env vars. Run it once per account before the first `terraform init`. The bucket outlives every environment.
-- `scripts/store-argocd-github-app.sh`: Argo CD reads the private repo through a **read-only GitHub App** (Contents: Read-only, installed on this repo only), not a deploy key. Argo CD mints installation tokens that expire after an hour, so no static credential goes over the wire. The app is created once in GitHub's UI; the steps are in the script header. Run the script with `APP_ID` and `PEM_FILE`. It finds the installation ID, mints and revokes a probe token to check that permissions are exactly read-only, and stores `{appId, installationId, privateKey}` in Secrets Manager (`agentic-sre/argocd/github-app`). The secret lives outside Terraform and outlives environments. To rotate, re-run it with a new `.pem`, bump `argocd_repo_secret_revision`, and apply. Repo URLs must be **HTTPS** (`https://github.com/Calebache/platform-engineering.git`), because GitHub App auth doesn't work over SSH. The SRE agent's PR-writing identity will be a **separate** app with write permissions; never widen this one.
+- `scripts/store-github-app.sh` stores a GitHub App's credentials in Secrets Manager after checking that its permissions **exactly** match a profile. It finds the installation ID, then mints and revokes a probe token. Each app is created once in GitHub's UI; the steps are in the script header. Both apps use installation tokens that expire after an hour, so no static credential goes over the wire, and the secrets live outside Terraform and outlive environments.
+  - `PROFILE=argocd`: Argo CD's **read-only** app (Contents: Read), stored in `agentic-sre/argocd/github-app`. Terraform reads it ephemerally. To rotate, re-run the script, bump `argocd_repo_secret_revision`, and apply. Repo URLs must be **HTTPS**, because GitHub App auth doesn't work over SSH.
+  - `PROFILE=mcp`: the MCP server's app (Contents + Pull requests: Read and write), stored in `agentic-sre-dev/mcp-server/github-app`. External Secrets syncs it. **Only the MCP server holds a write credential; the agent holds none.** Never widen either app.
 - `gitops/apps/<env>/` is what the root Application syncs: one Argo CD `Application` per component, plus the `platform` AppProject and the Envoy OCI repo Secret. Each Application needs `project: platform`, a sync-wave annotation and the `resources-finalizer.argocd.argoproj.io` finalizer. The AppProject's `sourceRepos` is an allow-list, so add a new chart repo in the same change as its Application.
 - `gitops/platform/<env>/` holds cluster-wide config, synced by the `platform-config` Application: ClusterIssuers, the EnvoyProxy/GatewayClass, the `public` Gateway and the HTTP→HTTPS redirect.
 - `apps/<name>/` holds the Go services, each its own module with a `Dockerfile` (static binary on distroless, non-root). `gitops/workloads/<env>/<name>/` holds their manifests, deployed by a wave-2 Application in `gitops/apps/<env>/`.
@@ -30,7 +32,7 @@ Sync waves (child Application health is enabled through a Lua check in the `argo
 | -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source) |
 | 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager) |
 | 1 | `platform-config` (ClusterIssuers, GatewayClass, Gateway). This is the first wave `destroy-env.sh` removes. |
-| 2 | Workloads: payment-api (MCP server and agent runtime planned). Each Application ships its own HTTPRoute, ServiceMonitor and PrometheusRule. |
+| 2 | Workloads: payment-api, mcp-server, sre-agent (namespace and identity only so far). Each Application ships its own ServiceMonitor and PrometheusRule, and an HTTPRoute if it's public. |
 
 External Secrets (wave -1) is **the only way workloads get secrets**. Terraform's `app-secret` module generates a credential as an ephemeral value and writes it to Secrets Manager under `agentic-sre-dev/...` with a write-only attribute, so it never touches Git or state. The `aws-secrets-manager` ClusterSecretStore reads it with the controller's Pod Identity, which IAM limits to the `agentic-sre-dev/` prefix. An `ExternalSecret` in the workload's namespace creates the Kubernetes Secret. The store only serves namespaces listed in its `conditions`, so add a namespace there before its first ExternalSecret. The webhook and cert-controller are off. Secrets use `recovery_window_in_days = 0`, so recreated environments can reuse the names.
 
@@ -43,6 +45,26 @@ Rotating the payment-api DB password changes only the stored value: Postgres app
 4. Run `kubectl -n payment-api rollout restart deployment/payment-api`.
 
 If you restart the app before step 3, every query fails authentication. Those 500s look exactly like the demo incident.
+
+**Docs the agent reads.** `docs/architecture.md`, `docs/runbooks/<service>.md`, `apps/<service>/README.md` and `apps/payment-api/schema.sql` are served to the agent as MCP resources, read live from `main`. Keep them accurate: they're the agent's context. payment-api embeds `schema.sql` (`go:embed`), so the documented schema is the running schema.
+
+**mcp-server** (`apps/mcp-server`, `gitops/workloads/dev/mcp-server`) is the governed gateway between the agent and the platform. It's in-cluster only: `http://mcp-server.mcp-server.svc/mcp`, Streamable HTTP.
+- **One choke point.** A single receiving middleware (`middleware.go`) authenticates, authorizes, audits and counts **every** MCP method before any handler runs. Never add a path around it.
+  - **Authentication:** a projected ServiceAccount token with audience `mcp-server`, verified with **TokenReview** (`auth.go`).
+  - **Authorization:** the embedded OPA policy `apps/mcp-server/policy/mcp.rego`, which fails closed. Allowed callers, in-scope services, tools, prompts and the PR rules all live there. It's also served to the agent as `platform://policy/mcp`.
+- **Denials** of tool calls are returned as tool results carrying the structured decision, so the agent can read `required_path`. Denials of other methods are protocol errors. `patch_deployment` exists only to be refused.
+- **Tools.**
+  - **Reads:** seven read-only tools for in-scope services. Metrics come from **named queries only**; the agent can't send PromQL. Logs are redacted. `get_error_patterns` groups errors by masked template and keeps host names.
+  - **Writes:** one, `create_pull_request`. Policy limits it to `gitops/workloads/<env>/<in-scope service>/`, branches named `agent/*`, no `..` in paths, and no `kind: Secret`.
+- **Resources and prompts.**
+  - **Resources:** a fixed catalogue (`resources.go`) mapping `platform://` URIs to repo paths.
+  - **Prompts:** `investigate_incident`, `propose_remediation` and `verify_recovery` (`prompts/*.md`, embedded).
+- **Its own permissions.** No AWS role. Kubernetes read access is **bound per namespace** (`rbac.yaml`), with no Secrets, plus Argo CD Applications and TokenReview. GitHub access is through its own app.
+- **Adding a service** takes three changes: a RoleBinding in `rbac.yaml`, the service in `services` in `mcp.rego`, and its docs. The convention is that service X runs as Deployment X in namespace X, with Argo CD Application X.
+- **Network.** A NetworkPolicy lets only the `sre-agent` namespace reach port 8080, and `monitoring` reach 9090. The VPC CNI enforces it (`enableNetworkPolicy` in the eks module). Namespaces without a NetworkPolicy remain open.
+- **Output schemas are validated.** The Go SDK checks tool output against generated schemas, and a nil slice or map serializes as `null`, which fails. Every optional collection field in an output struct needs `omitempty`.
+- **Tests.** `go test -race ./...` covers the policy table, pattern grouping, redaction, rollout diffs, and an end-to-end client over HTTP with authentication.
+- **In-cluster check.** `mcp-server smoke` runs every check, including the denials, from a pod using the `sre-agent` ServiceAccount.
 
 **payment-api** (`apps/payment-api`, `gitops/workloads/dev/payment-api`) is the demo workload:
 - **API.** `POST /v1/payments` `{amount_cents, currency}` and `GET /v1/payments/{id}`. Postgres runs in the same namespace on emptyDir storage.
@@ -79,7 +101,8 @@ Terraform **>= 1.11** is required (write-only attributes). Homebrew's `terraform
 
 ```bash
 scripts/bootstrap-state-bucket.sh                                                                  # once per account
-APP_ID=<id> PEM_FILE=<app.pem> scripts/store-argocd-github-app.sh                                  # once per account, after creating the app
+PROFILE=argocd APP_ID=<id> PEM_FILE=<app.pem> scripts/store-github-app.sh                          # once per account, after creating the app
+PROFILE=mcp    APP_ID=<id> PEM_FILE=<app.pem> scripts/store-github-app.sh                          # once per account (MCP server's PR-writing app)
 terraform -chdir=terraform init -backend-config=environments/dev.s3.tfbackend -reconfigure        # select env
 terraform -chdir=terraform plan  -var-file=environments/dev.tfvars
 terraform -chdir=terraform apply -var-file=environments/dev.tfvars

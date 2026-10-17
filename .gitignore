@@ -15,3 +15,9 @@ override.tf.json
 *.key
 .env
 .env.*
+
+# Go build output (`go build` in an app directory writes a binary named after it)
+apps/*/mcp-server
+apps/*/payment-api
+apps/*/sre-agent
+*.test

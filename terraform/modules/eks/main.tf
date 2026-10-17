@@ -199,7 +199,12 @@ resource "aws_eks_addon" "before_nodes" {
   # single IPs, lifting the per-node pod limit from the ENI-IP ceiling
   # (17 on t3.medium) to node_max_pods. Kubelet's maxPods is set to match in
   # the launch template.
+  #
+  # enableNetworkPolicy turns on the CNI's eBPF node agent, which enforces
+  # Kubernetes NetworkPolicy objects. Namespaces without a policy stay open;
+  # sensitive ones (mcp-server) deny ingress by default.
   configuration_values = each.value == "vpc-cni" ? jsonencode({
+    enableNetworkPolicy = "true"
     env = {
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
