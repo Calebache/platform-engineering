@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: mcp-server
+  labels:
+    app.kubernetes.io/name: mcp-server
+    app.kubernetes.io/part-of: agentic-sre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcp-server
+        app.kubernetes.io/part-of: agentic-sre
+    spec:
+      serviceAccountName: mcp-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Secret volume files are group-owned by fsGroup, so the non-root
+        # process can read its key (mode 0440) and nothing else can.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp-server
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/mcp-server:49f3945fe6b7
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: ENVIRONMENT
+              value: dev
+            - name: TOKEN_AUDIENCE
+              value: mcp-server
+            - name: PROMETHEUS_URL
+              value: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+            - name: GITHUB_REPOSITORY
+              value: Calebache/platform-engineering
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef: { name: mcp-server-github-app, key: app-id }
+            - name: GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef: { name: mcp-server-github-app, key: installation-id }
+            - name: GITHUB_APP_PRIVATE_KEY_FILE
+              value: /var/run/secrets/github-app/private-key
+          volumeMounts:
+            - name: github-app-key
+              mountPath: /var/run/secrets/github-app
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: github-app-key
+          secret:
+            secretName: mcp-server-github-app
+            items:
+              - key: private-key
+                path: private-key
+            defaultMode: 0440

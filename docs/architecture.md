@@ -133,6 +133,24 @@ and logs every decision.
 - Its own permissions: read-only RBAC without Secrets, no AWS role, and the
   GitHub App above.
 
+### Known gap: no branch protection
+
+The repository is private on GitHub Free, which offers no branch protection
+or rulesets for private repositories. Consequences:
+
+- The MCP server's GitHub App needs Contents: write to create `agent/*`
+  branches, and GitHub can't scope that to branches, so the credential could
+  technically push to `main`. What prevents it is the MCP server itself (OPA
+  policy and code only ever create `agent/*` branches and open PRs) and the
+  fact that the agent holds no GitHub credential. A compromised MCP server
+  pod would not be stopped by GitHub.
+- "CI passes and a human approves before merge" is a working agreement, not
+  something GitHub enforces.
+
+Closing it needs branch protection on `main`: a public repository, or GitHub
+Pro. With it, require a pull request with one approval and passing status
+checks, and don't allow bypass.
+
 ## Intentional failure demos
 
 - A commit setting a wrong `DATABASE_HOST` on payment-api → HTTP 500s → alert.

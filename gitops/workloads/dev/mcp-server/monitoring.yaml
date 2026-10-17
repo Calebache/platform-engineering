@@ -1,0 +1,39 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mcp-server
+  namespace: mcp-server
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-server
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mcp-server
+  namespace: mcp-server
+spec:
+  groups:
+    - name: mcp-server
+      rules:
+        # Not an outage: evidence that a caller attempted something the policy
+        # forbids (e.g. a direct patch). Worth a look, and worth showing.
+        - alert: McpPolicyDenials
+          expr: sum by (name) (increase(mcp_requests_total{namespace="mcp-server", outcome="denied"}[5m])) > 0
+          labels:
+            severity: warning
+            service: mcp-server
+          annotations:
+            summary: "MCP policy denied {{ $labels.name }} in the last 5 minutes"
+        - alert: McpServerDown
+          expr: absent(up{namespace="mcp-server", service="mcp-server"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            service: mcp-server
+          annotations:
+            summary: The MCP server is not being scraped; the SRE agent has no tools

@@ -1,0 +1,19 @@
+# The SRE agent's namespace and identity. The agent itself comes later; the
+# ServiceAccount exists now because it is the one identity the MCP server's
+# policy accepts, and the Pod Identity role (Bedrock in us-east-1, audit
+# writes) is already bound to it by Terraform.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sre-agent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+# No Kubernetes RBAC: the agent reads the cluster only through the MCP server.
+automountServiceAccountToken: false

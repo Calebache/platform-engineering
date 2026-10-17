@@ -1,0 +1,24 @@
+# The SRE agent: for now its namespace and ServiceAccount (the identity the
+# MCP server authorises); the agent workload is added later.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sre-agent
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/Calebache/platform-engineering.git
+    targetRevision: main
+    path: gitops/workloads/dev/sre-agent
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sre-agent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

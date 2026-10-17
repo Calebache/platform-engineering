@@ -1,0 +1,45 @@
+# In-cluster only: no HTTPRoute. Endpoint: http://mcp-server.mcp-server.svc/mcp
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: mcp-server
+  labels:
+    app.kubernetes.io/name: mcp-server
+spec:
+  selector:
+    app.kubernetes.io/name: mcp-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+# Network layer of defence (the first is TokenReview + policy): only pods in
+# the sre-agent namespace may reach the MCP endpoint, and only Prometheus may
+# reach metrics. Everything else is dropped by the VPC CNI's policy agent.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-server-ingress
+  namespace: mcp-server
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-server
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sre-agent
+      ports:
+        - port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
