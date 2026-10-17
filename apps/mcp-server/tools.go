@@ -75,6 +75,10 @@ type LimitInput struct {
 	Limit   int    `json:"limit,omitempty" jsonschema:"maximum entries (default 5, max 20)"`
 }
 
+type PullRequestNumber struct {
+	Number int `json:"number" jsonschema:"pull request number returned by create_pull_request"`
+}
+
 type PatchInput struct {
 	Service string `json:"service" jsonschema:"service name"`
 	Patch   string `json:"patch" jsonschema:"strategic merge patch for the Deployment"`
@@ -208,6 +212,15 @@ func (d *deps) addTools(s *mcp.Server) {
 		}
 		pr, err := d.git.createPullRequest(ctx, in)
 		return nil, pr, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_pull_request",
+		Description: "Status of a pull request opened from an agent/* branch: open or closed, whether it was merged, by whom and when.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in PullRequestNumber) (*mcp.CallToolResult, *PullRequestStatus, error) {
+		st, err := d.git.pullRequest(ctx, in.Number)
+		return nil, st, err
 	})
 
 	// Exists to be refused. The policy denies it before this handler runs;

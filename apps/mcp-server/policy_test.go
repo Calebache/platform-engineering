@@ -44,6 +44,8 @@ func TestPolicyDecisions(t *testing.T) {
 		{"PR other service", policyInput{Caller: agent, Method: "tools/call", Name: "create_pull_request", Args: map[string]any{
 			"branch": "agent/x", "files": []any{file("gitops/workloads/dev/mcp-server/deployment.yaml", "")}}}, false, "not part of an in-scope service", ""},
 		{"PR no files", policyInput{Caller: agent, Method: "tools/call", Name: "create_pull_request", Args: map[string]any{"branch": "agent/x"}}, false, "at least one file", ""},
+		{"read agent PR", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request", Args: map[string]any{"number": 7}}, true, "", ""},
+		{"read PR without number", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request"}, false, "not permitted", ""},
 		{"platform resource", policyInput{Caller: agent, Method: "resources/read", Name: "platform://docs/architecture"}, true, "", ""},
 		{"other resource", policyInput{Caller: agent, Method: "resources/read", Name: "file:///etc/passwd"}, false, "not permitted", ""},
 		{"known prompt", policyInput{Caller: agent, Method: "prompts/get", Name: "investigate_incident"}, true, "", ""},

@@ -51,6 +51,9 @@ func (f *fakeGit) readFile(_ context.Context, path string) (string, error) {
 	}
 	return "content of " + path, nil
 }
+func (f *fakeGit) pullRequest(_ context.Context, n int) (*PullRequestStatus, error) {
+	return &PullRequestStatus{Number: n, Branch: "agent/fix-db-host", State: "closed", Merged: true, MergedBy: "CalebAche"}, nil
+}
 func (f *fakeGit) createPullRequest(_ context.Context, in PullRequestInput) (*PullRequestResult, error) {
 	f.prs = append(f.prs, in)
 	return &PullRequestResult{Number: 7, URL: "https://github.com/x/pull/7", Branch: in.Branch}, nil
@@ -125,7 +128,7 @@ func TestAgentSessionEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
 	tools, err := s.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 9 {
+	if err != nil || len(tools.Tools) != 10 {
 		t.Fatalf("tools: %v %v", lenTools(tools), err)
 	}
 
@@ -161,6 +164,11 @@ func TestAgentSessionEndToEnd(t *testing.T) {
 	})
 	if r.IsError || !strings.Contains(body, "pull/7") || len(git.prs) != 1 {
 		t.Fatalf("valid PR should be created: %s", body)
+	}
+
+	r, body = callJSON(t, s, "get_pull_request", map[string]any{"number": 7})
+	if r.IsError || !strings.Contains(body, `"merged":true`) {
+		t.Fatalf("get_pull_request: %s", body)
 	}
 
 	rr, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "platform://services/payment-api/runbook"})

@@ -47,7 +47,7 @@ func runSmoke(ctx context.Context, args []string) error {
 	}
 
 	tools, err := session.ListTools(ctx, nil)
-	check("tools/list", err == nil && len(tools.Tools) == 9, fmt.Sprintf("%d tools, err=%v", lenTools(tools), err))
+	check("tools/list", err == nil && len(tools.Tools) == 10, fmt.Sprintf("%d tools, err=%v", lenTools(tools), err))
 	res, err := session.ListResources(ctx, nil)
 	check("resources/list", err == nil && len(res.Resources) == len(resourceCatalogue), fmt.Sprintf("err=%v", err))
 	prompts, err := session.ListPrompts(ctx, nil)

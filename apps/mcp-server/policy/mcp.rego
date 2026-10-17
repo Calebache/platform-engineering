@@ -62,6 +62,10 @@ decision := {"allowed": false, "reason": sprintf("caller %q is not authorised to
 } else := {"allowed": false, "reason": sprintf("service %q is not in scope", [service])} if {
 	input.method == "tools/call"
 	input.name in read_tools
+} else := {"allowed": true, "reason": "reading the status of an agent pull request"} if {
+	input.method == "tools/call"
+	input.name == "get_pull_request"
+	object.get(args, "number", 0) > 0
 } else := pr_decision if {
 	input.method == "tools/call"
 	input.name == "create_pull_request"

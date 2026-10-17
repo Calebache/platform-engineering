@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-[doc.md](doc.md) is the implementation summary for an **Agentic SRE Platform PoC** on AWS; read it before building anything. So far there's the Terraform foundation, the Argo CD bootstrap (one `terraform apply` does both), the platform Applications (Envoy Gateway, AWS Load Balancer Controller, cluster-autoscaler, cert-manager, external-dns, plus the public Gateway), observability (kube-prometheus-stack), External Secrets, and the `payment-api` demo workload. CI, the MCP server and the SRE agent come next. Update this file as they land.
+[doc.md](doc.md) is the implementation summary for an **Agentic SRE Platform PoC** on AWS; read it before building anything. So far there's the Terraform foundation, the Argo CD bootstrap (one `terraform apply` does both), the platform Applications (Envoy Gateway, AWS Load Balancer Controller, cluster-autoscaler, cert-manager, external-dns, plus the public Gateway), observability (kube-prometheus-stack), External Secrets, the `payment-api` demo workload, the MCP server, and the SRE agent (one Kubernetes Job per incident). CI comes next. Update this file as they land.
 
 ## Layout and commands
 
@@ -33,7 +33,7 @@ Sync waves (child Application health is enabled through a Lua check in the `argo
 | -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source) |
 | 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager) |
 | 1 | `platform-config` (ClusterIssuers, GatewayClass, Gateway). This is the first wave `destroy-env.sh` removes. |
-| 2 | Workloads: payment-api, mcp-server, sre-agent (namespace and identity only so far). Each Application ships its own ServiceMonitor and PrometheusRule, and an HTTPRoute if it's public. |
+| 2 | Workloads: payment-api, mcp-server, sre-agent. Each Application ships its own ServiceMonitor and PrometheusRule, and an HTTPRoute if it's public. |
 
 External Secrets (wave -1) is **the only way workloads get secrets**. Terraform's `app-secret` module generates a credential as an ephemeral value and writes it to Secrets Manager under `agentic-sre-dev/...` with a write-only attribute, so it never touches Git or state. The `aws-secrets-manager` ClusterSecretStore reads it with the controller's Pod Identity, which IAM limits to the `agentic-sre-dev/` prefix. An `ExternalSecret` in the workload's namespace creates the Kubernetes Secret. The store only serves namespaces listed in its `conditions`, so add a namespace there before its first ExternalSecret. The webhook and cert-controller are off. Secrets use `recovery_window_in_days = 0`, so recreated environments can reuse the names.
 
@@ -66,6 +66,27 @@ If you restart the app before step 3, every query fails authentication. Those 50
 - **Output schemas are validated.** The Go SDK checks tool output against generated schemas, and a nil slice or map serializes as `null`, which fails. Every optional collection field in an output struct needs `omitempty`.
 - **Tests.** `go test -race ./...` covers the policy table, pattern grouping, redaction, rollout diffs, and an end-to-end client over HTTP with authentication.
 - **In-cluster check.** `mcp-server smoke` runs every check, including the denials, from a pod using the `sre-agent` ServiceAccount.
+
+**sre-agent** (`apps/sre-agent`, `gitops/workloads/dev/sre-agent`) closes the loop: it's one image with three modes.
+- **`orchestrator`** (Deployment, SA `sre-agent-orchestrator`): receives Alertmanager webhooks on `/alerts` and creates **one Job per incident** from a fixed template (`buildJob`). It de-duplicates by service and alert: no new Job while one is active, plus a 30-minute cooldown after one finishes. It has **no AWS role and no model or MCP access**; RBAC allows Jobs and reading Pods in its own namespace only. Every 30 s it reconciles finished Jobs into `sre_agent_incidents{service,outcome}`, read from each pod's termination message.
+- **`investigate`** (the Job, SA `sre-agent`) runs the incident lifecycle (`worker.go`):
+  - **Phases:** investigate → remediate (PR) or escalate → await merge (a deterministic poll of `get_pull_request`) → verify → audit.
+  - **Each phase** is a manual Claude tool loop (`loop.go`) over the MCP tools allowed in that phase. The investigate phase is never offered write tools. The phase ends when the model calls a local `submit_*` tool, so results are structured.
+  - **The code, not the model, decides:**
+    - **The PR:** the agent trusts the recorded `create_pull_request` result over the model's report, and allows at most one PR per incident.
+    - **Recovery:** it needs the model's verdict **and** `recoveryGate` (error ratio under 1%, alert not firing).
+    - **Escalation:** refusals, limits and missing submits escalate; nothing is retried.
+  - **Model settings:** Claude Opus 5.5 on Bedrock via `bedrock.NewMantleClient` with `BEDROCK_REGION` (required; never `AWS_REGION`). Thinking is left unset (always on for this model), effort is `high`, and the system prompt carries an explicit cache breakpoint (Bedrock has no automatic caching). History is append-only through `resp.ToParam()`. Forced `tool_choice` isn't supported on this model, so the loop nudges once instead.
+  - **Outputs:** the audit record (doc.md §16 fields) goes to `s3://agentic-sre-dev-audit-…/audit/<yyyy>/<mm>/<dd>/<incident-id>.json`, rewritten at each phase (the bucket is versioned). The outcome goes to the termination message. Outcomes are `resolved`, `no_action`, `escalated`, `pr_rejected`, `approval_timeout`, `not_recovered` and `failed`.
+- **`whoami`** proves doc.md §17 from a pod running as `sre-agent`: the allowed calls succeed (STS, `PutObject audit/*`, Bedrock in us-east-1), and out-of-scope ones return `AccessDenied` (ListBucket, GetObject, PutObject outside `audit/`, ListAllMyBuckets, Bedrock in another region). `--skip-model` avoids the billed call.
+- **Job safety.**
+  - **Admission:** `admission-policy.yaml` (a ValidatingAdmissionPolicy on the namespace) pins every Job to the agent's ECR image, SA `sre-agent`, the `investigate` entrypoint, one container, no host namespaces, only the MCP-audience token volume, and the restricted security context.
+  - **Network:** `network-policy.yaml` gives workers no ingress, and egress only to DNS, the MCP server, the Pod Identity agent (`169.254.170.23:80`) and HTTPS outside the VPC. The orchestrator admits only `monitoring`.
+  - **Limits:** `backoffLimit: 0`, a 1 h deadline, and caps from `MAX_TOOL_CALLS`, `MAX_MODEL_CALLS` and `MAX_OUTPUT_TOKENS`.
+- **Configuration:** the worker's settings are set on the orchestrator Deployment as `WORKER_*` env vars and passed through verbatim. `WORKER_DEMO_ATTEMPT_DIRECT_FIX=true` (the dev default) tells the model to try `patch_deployment` first so the policy refusal is visible (doc.md §14); set it to `false` for normal operation.
+- **Routing:** Alertmanager (kube-prometheus-stack values) sends only `service=~"payment-api", severity="critical"` to `http://sre-agent.sre-agent.svc/alerts`. The agent's own alerts (`SreAgentEscalation`, warning) route to `null`, so it can't trigger itself. Check routing with `amtool config routes test`.
+- **Tests:** `go test -race ./...` scripts whole incidents with a fake model (`anthropic.Message` built from JSON) and a fake MCP session. It covers the denial path, the single-PR limit, the gate overruling the model, escalation, refusal, timeouts, de-duplication and the Job shape.
+- **Production:** the agent belongs in a separate operations cluster and account; see `docs/production-agent-topology.md`.
 
 **payment-api** (`apps/payment-api`, `gitops/workloads/dev/payment-api`) is the demo workload:
 - **API.** `POST /v1/payments` `{amount_cents, currency}` and `GET /v1/payments/{id}`. Postgres runs in the same namespace on emptyDir storage.

@@ -20,6 +20,7 @@ type gitHost interface {
 	recentCommits(ctx context.Context, paths []string, limit int) ([]Commit, error)
 	readFile(ctx context.Context, path string) (string, error)
 	createPullRequest(ctx context.Context, pr PullRequestInput) (*PullRequestResult, error)
+	pullRequest(ctx context.Context, number int) (*PullRequestStatus, error)
 }
 
 type Commit struct {
@@ -53,6 +54,22 @@ type PullRequestResult struct {
 	URL    string `json:"url"`
 	Branch string `json:"branch"`
 }
+
+// PullRequestStatus is what the agent needs to record human approval:
+// whether its PR was merged, by whom and when.
+type PullRequestStatus struct {
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Branch   string `json:"branch"`
+	State    string `json:"state"`
+	Merged   bool   `json:"merged"`
+	MergedBy string `json:"merged_by,omitempty"`
+	MergedAt string `json:"merged_at,omitempty"`
+	MergeSHA string `json:"merge_commit_sha,omitempty"`
+}
+
+var errNotAgentPR = errors.New("only pull requests from agent/* branches can be read")
 
 type githubBackend struct {
 	client      *github.Client
@@ -201,4 +218,27 @@ func (g *githubBackend) createPullRequest(ctx context.Context, in PullRequestInp
 		return nil, fmt.Errorf("open pull request: %w", err)
 	}
 	return &PullRequestResult{Number: pr.GetNumber(), URL: pr.GetHTMLURL(), Branch: in.Branch}, nil
+}
+
+// pullRequest reads one PR, and only PRs the agent could have opened (agent/*
+// branches), so this can't be used to browse unrelated work.
+func (g *githubBackend) pullRequest(ctx context.Context, number int) (*PullRequestStatus, error) {
+	pr, _, err := g.client.PullRequests.Get(ctx, g.owner, g.repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("get pull request #%d: %w", number, err)
+	}
+	if !strings.HasPrefix(pr.GetHead().GetRef(), "agent/") {
+		return nil, errNotAgentPR
+	}
+	st := &PullRequestStatus{
+		Number: pr.GetNumber(), Title: pr.GetTitle(), URL: pr.GetHTMLURL(), Branch: pr.GetHead().GetRef(),
+		State: pr.GetState(), Merged: pr.GetMerged(), MergedBy: pr.GetMergedBy().GetLogin(), MergeSHA: pr.GetMergeCommitSHA(),
+	}
+	if pr.MergedAt != nil {
+		st.MergedAt = pr.GetMergedAt().UTC().Format(time.RFC3339)
+	}
+	if !st.Merged {
+		st.MergeSHA = ""
+	}
+	return st, nil
 }

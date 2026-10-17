@@ -100,22 +100,56 @@ them to the SRE agent. Grafana is internal only.
 ## The agent loop
 
 ```
-Alertmanager ──webhook──> SRE agent ──MCP──> MCP server ──> Kubernetes (read)
-                              │                        ├──> Prometheus (named queries)
-                              │                        ├──> Argo CD (read)
-                              │                        └──> GitHub (read, PRs)
-                              └──> Bedrock (Claude), S3 audit record
+Alertmanager ──webhook──> orchestrator ──creates──> incident Job (one per incident)
+                         (no AWS role,               │
+                          no model access)           ├──MCP──> MCP server ──> Kubernetes (read)
+                                                     │                    ├──> Prometheus (named queries)
+                                                     │                    ├──> Argo CD (read)
+                                                     │                    └──> GitHub (read, PRs)
+                                                     ├──> Bedrock (Claude Opus 5.5, us-east-1)
+                                                     └──> S3 audit record
 ```
 
-1. An alert fires and reaches the agent.
-2. The agent investigates only through MCP tools, starting with
-   `get_incident_context`, and reads the service runbook resource.
-3. It forms a hypothesis with evidence (log patterns, deploy history, commits).
-4. Direct mutation is refused by policy (`patch_deployment` →
-   `required_path: create_pull_request`).
-5. It opens a PR; CI validates it; a human approves and merges.
-6. Argo CD deploys the fix; the agent verifies recovery with metrics.
-7. The agent writes an audit record to S3.
+1. A critical alert for an in-scope service reaches the **orchestrator**,
+   which de-duplicates it and creates one **Job** for the incident.
+2. The Job's worker investigates only through MCP tools, starting with the
+   `investigate_incident` prompt and `get_incident_context`, and reads the
+   service runbook resource.
+3. It submits a hypothesis with evidence and the runbook's path: fix through
+   Git, escalate to a human, or no action.
+4. To fix, it proposes a pull request. Direct mutation is refused by policy
+   (`patch_deployment` → `required_path: create_pull_request`); in demo mode
+   the agent is told to try it first, so the refusal is visible.
+5. A human reviews and merges the PR; the worker polls for the merge.
+6. Argo CD deploys the fix; the worker verifies recovery. Both the model's
+   verdict and a deterministic check (error ratio under 1%, alert not
+   firing) must agree before the incident is resolved.
+7. The worker writes the audit record to S3 at every phase, and reports its
+   outcome in the Job's termination message. Anything other than
+   "resolved" or "no action" raises `SreAgentEscalation`.
+
+### Incident Jobs
+
+- **Identity.** Workers run as `sre-agent`: Bedrock in us-east-1 and
+  `PutObject` on `audit/*` only, no Kubernetes RBAC, no GitHub credential.
+  The only token mounted is a short-lived one for the MCP server's
+  audience. The orchestrator runs as `sre-agent-orchestrator`, which can
+  create Jobs and read their Pods in its own namespace and nothing else.
+- **Shape is pinned.** A `ValidatingAdmissionPolicy` allows Jobs in the
+  namespace only if they run the agent's own ECR image, as `sre-agent`, with
+  the `investigate` entrypoint, one container, no host namespaces, only the
+  MCP token volume, and the restricted security context.
+- **Limits.** `backoffLimit: 0`, a one-hour deadline, and per-incident caps
+  on tool calls, model calls and output tokens; at most one PR per
+  incident.
+- **Network.** Nothing may connect to a worker. Workers may reach DNS, the
+  MCP server, the Pod Identity agent, and HTTPS outside the VPC (Bedrock,
+  S3). Hostname filtering needs an egress proxy or VPC endpoints.
+
+Running the agent in the same cluster it investigates is a PoC compromise.
+The production design (a separate operations cluster and account,
+PrivateLink, OIDC-federated identity) is in
+[production-agent-topology.md](production-agent-topology.md).
 
 ## MCP server
 
