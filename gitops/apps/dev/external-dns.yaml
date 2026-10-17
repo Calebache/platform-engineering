@@ -40,6 +40,8 @@ spec:
         txtOwnerId: agentic-sre-dev
         txtPrefix: _externaldns.
         interval: 1m
+        serviceMonitor:
+          enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: external-dns

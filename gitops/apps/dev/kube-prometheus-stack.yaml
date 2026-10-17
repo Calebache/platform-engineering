@@ -1,0 +1,116 @@
+# Prometheus Operator, Prometheus, Alertmanager, Grafana, kube-state-metrics
+# and node-exporter. Wave -2 so the monitoring CRDs (ServiceMonitor,
+# PodMonitor, PrometheusRule) exist before later charts create ServiceMonitors.
+#
+# Storage is ephemeral (no EBS CSI driver in this PoC): metrics survive two
+# days but not a Prometheus pod restart. Grafana is ClusterIP only; reach it
+# with `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 91.9.0
+    helm:
+      valuesObject:
+        # EKS runs these control-plane components itself; they can't be
+        # scraped, and their default alerts would fire forever.
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+        defaultRules:
+          rules:
+            etcd: false
+            kubeControllerManager: false
+            kubeSchedulerAlerting: false
+            kubeSchedulerRecording: false
+            kubeProxy: false
+
+        prometheusOperator:
+          # Off on purpose: its self-signed cert is patched in by a hook Job,
+          # which Argo CD then "fixes" back, breaking the webhook. Rule syntax
+          # is checked with promtool in CI instead.
+          admissionWebhooks:
+            enabled: false
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+
+        prometheus:
+          prometheusSpec:
+            retention: 2d
+            scrapeInterval: 30s
+            # Pick up ServiceMonitors/PodMonitors/rules from every namespace,
+            # not only ones labelled for this Helm release.
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            probeSelectorNilUsesHelmValues: false
+            resources:
+              requests: { cpu: 200m, memory: 512Mi }
+              limits: { memory: 1536Mi }
+
+        alertmanager:
+          alertmanagerSpec:
+            resources:
+              requests: { cpu: 25m, memory: 64Mi }
+              limits: { memory: 128Mi }
+
+        grafana:
+          # Read-only anonymous access; dashboards are provisioned from Git
+          # (ConfigMaps labelled grafana_dashboard, any namespace).
+          grafana.ini:
+            auth.anonymous:
+              enabled: true
+              org_role: Viewer
+            users:
+              allow_sign_up: false
+          sidecar:
+            dashboards:
+              searchNamespace: ALL
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+
+        kube-state-metrics:
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 128Mi }
+        prometheus-node-exporter:
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 64Mi }
+  # The chart generates a random Grafana admin password on every render.
+  # Keep the first one instead of rotating it on each sync.
+  ignoreDifferences:
+    - kind: Secret
+      name: kube-prometheus-stack-grafana
+      namespace: monitoring
+      jsonPointers:
+        - /data/admin-password
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The monitoring CRDs exceed the client-side apply annotation limit.
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

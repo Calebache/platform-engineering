@@ -36,6 +36,8 @@ spec:
         # controller hiccup blocks unrelated workloads. Envoy's Service sets
         # loadBalancerClass itself (EnvoyProxy "nlb"), so the mutator isn't needed.
         enableServiceMutatorWebhook: false
+        serviceMonitor:
+          enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system

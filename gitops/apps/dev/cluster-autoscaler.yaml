@@ -30,6 +30,10 @@ spec:
           serviceAccount:
             create: true
             name: cluster-autoscaler
+        serviceMonitor:
+          enabled: true
+          # Keep it next to the autoscaler; the chart defaults to "monitoring".
+          namespace: kube-system
         extraArgs:
           expander: least-waste
           balance-similar-node-groups: true

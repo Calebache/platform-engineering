@@ -21,6 +21,10 @@ spec:
           enabled: true
         serviceAccount:
           name: cert-manager
+        prometheus:
+          enabled: true
+          servicemonitor:
+            enabled: true
         # Lets the cert-manager.io/cluster-issuer annotation on a Gateway
         # create its Certificate. Needs the Gateway API CRDs (wave -2).
         config:

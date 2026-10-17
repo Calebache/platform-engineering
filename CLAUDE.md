@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-[doc.md](doc.md) is the implementation summary for an **Agentic SRE Platform PoC** on AWS; read it before building anything. So far there's the Terraform foundation, the Argo CD bootstrap (one `terraform apply` does both), and the platform Applications (Envoy Gateway, AWS Load Balancer Controller, cluster-autoscaler, cert-manager, external-dns, plus the public Gateway). Observability, CI and the Go services come next. Update this file as they land.
+[doc.md](doc.md) is the implementation summary for an **Agentic SRE Platform PoC** on AWS; read it before building anything. So far there's the Terraform foundation, the Argo CD bootstrap (one `terraform apply` does both), the platform Applications (Envoy Gateway, AWS Load Balancer Controller, cluster-autoscaler, cert-manager, external-dns, plus the public Gateway), and observability (kube-prometheus-stack). CI and the Go services come next. Update this file as they land.
 
 ## Layout and commands
 
@@ -24,12 +24,19 @@ Sync waves (child Application health is enabled through a Lua check in the `argo
 | Wave | Contents |
 |---|---|
 | -3 | `platform` AppProject, Envoy OCI repo Secret |
-| -2 | Envoy Gateway (installs the Gateway API CRDs), cluster-autoscaler |
+| -2 | Envoy Gateway (installs the Gateway API CRDs), kube-prometheus-stack (installs the ServiceMonitor/PodMonitor/PrometheusRule CRDs), cluster-autoscaler |
 | -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source) |
 | 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager) |
 | 1 | `platform-config` (ClusterIssuers, GatewayClass, Gateway). This is the first wave `destroy-env.sh` removes. |
 | 2 | Workloads: MCP server, agent runtime, payment-api (planned) |
 | 3 | Their HTTPRoutes (planned) |
+
+Observability is **kube-prometheus-stack** in the `monitoring` namespace:
+- **Scraping.** Prometheus selects ServiceMonitors, PodMonitors and PrometheusRules from **every namespace** with no label requirement. To add scraping for an app, ship a ServiceMonitor/PodMonitor next to it. Platform charts have their ServiceMonitors enabled. Envoy proxies are scraped by the `envoy-proxy` PodMonitor in `gitops/platform/dev/`. That's where per-route HTTP status counters come from, including payment-api's 5xx rate.
+- **What's not scraped.** EKS-managed control-plane components (controller-manager, scheduler, etcd, kube-proxy) can't be scraped. Their ServiceMonitors and default rules are disabled so they don't alert forever. Argo CD isn't scraped yet either: it's installed by Terraform before the monitoring CRDs exist.
+- **Storage.** It's **ephemeral**, because the PoC has no EBS CSI driver. Retention is 2 days, and a Prometheus pod restart loses history.
+- **Grafana.** ClusterIP only, with anonymous **Viewer** access. Dashboards come from Git: ConfigMaps labelled `grafana_dashboard` in any namespace. To open it: `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`. The admin password is in Secret `kube-prometheus-stack-grafana`. The chart randomises it on every render, so the Application ignores that field to keep the first one.
+- **Operator admission webhook.** It's **disabled** (see below), so PrometheusRule syntax isn't checked at apply time. CI must run `promtool check rules`.
 
 Webhooks are the main failure mode here. A broken admission webhook blocks unrelated resources cluster-wide, which is how a flaky LB controller cert once stopped cert-manager's Services from being created. So: no chart-generated self-signed webhook certs (Argo CD re-renders them on every sync; use cert-manager), and no cluster-wide mutators that aren't needed. The LB controller's Service mutator is off, and the EnvoyProxy sets `loadBalancerClass: service.k8s.aws/nlb` itself.
 
