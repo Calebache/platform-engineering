@@ -40,7 +40,7 @@ spec:
             # The demo's failure point: change this to a wrong host in a
             # commit and every database request returns HTTP 500.
             - name: DATABASE_HOST
-              value: postgres.payment-api.svc.cluster.local
+              value: postgres-primary-test.payment-api.svc.cluster.local
             - name: DATABASE_PORT
               value: "5432"
             - name: DATABASE_NAME
