@@ -18,12 +18,6 @@ variable "password_length" {
   default = 32
 }
 
-variable "rotation_version" {
-  description = "Increment to generate and store a new password."
-  type        = number
-  default     = 1
-}
-
 variable "recovery_window_in_days" {
   description = "0 deletes immediately on destroy, so the same name can be reused when the environment is recreated."
   type        = number
