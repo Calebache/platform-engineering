@@ -11,7 +11,7 @@
 #   scripts/build-push.sh payment-api        # builds apps/payment-api
 # Env: TRIVY overrides the scanner command (CI runs it in Docker);
 #      REQUIRE_SCAN=true fails if no scanner is available.
-# Prints the pushed image reference on the last line.
+# stdout is only the pushed image reference; everything else goes to stderr.
 set -euo pipefail
 
 APP="${1:?usage: $0 <app>}"
@@ -46,12 +46,12 @@ fi
 
 log "Building $IMAGE for $PLATFORM"
 docker buildx build --platform "$PLATFORM" --build-arg VERSION="$TAG" \
-  --provenance=false --tag "$IMAGE" --load "$APP_DIR"
+  --provenance=false --tag "$IMAGE" --load "$APP_DIR" >&2
 
 # shellcheck disable=SC2086 # TRIVY may be a multi-word command
 if command -v ${TRIVY%% *} >/dev/null; then
   log "Scanning with Trivy (fails on fixable HIGH/CRITICAL)"
-  $TRIVY image --quiet --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE"
+  $TRIVY image --quiet --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE" >&2
 elif [[ "$REQUIRE_SCAN" == true ]]; then
   die "trivy not available and REQUIRE_SCAN=true"
 else
@@ -61,6 +61,9 @@ fi
 log "Logging in to $REGISTRY"
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 log "Pushing $IMAGE"
-docker push --quiet "$IMAGE" >/dev/null
+docker push --quiet "$IMAGE" >&2
+# Callers (CI's pin PR) trust this reference, so prove the tag is really there.
+aws ecr describe-images --region "$REGION" --repository-name "$APP" --image-ids imageTag="$TAG" >/dev/null \
+  || die "pushed $IMAGE but ECR doesn't list it"
 
 echo "$IMAGE"

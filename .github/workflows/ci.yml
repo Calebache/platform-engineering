@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# An explicit `shell: bash` runs steps with -eo pipefail; GitHub's implicit
+# default is `bash -e`, where a failure inside a pipeline goes unnoticed.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

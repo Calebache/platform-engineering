@@ -22,6 +22,12 @@ on:
 permissions:
   contents: read
 
+# An explicit `shell: bash` runs steps with -eo pipefail; GitHub's implicit
+# default is `bash -e`, where a failure inside a pipeline goes unnoticed.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: images-main
   cancel-in-progress: false
@@ -96,7 +102,7 @@ jobs:
           REQUIRE_SCAN: "true"
           TRIVY: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${{ env.TRIVY_IMAGE }}
         run: |
-          image="$(scripts/build-push.sh "$APP" | tail -1)"
+          image="$(scripts/build-push.sh "$APP")" # stdout is only the image reference
           echo "Pushed \`$image\`" >> "$GITHUB_STEP_SUMMARY"
 
   pin:
