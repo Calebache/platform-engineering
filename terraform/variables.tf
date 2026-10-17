@@ -35,7 +35,17 @@ variable "state_bucket_name" {
 }
 
 variable "bedrock_region" {
-  description = "Region of the Bedrock Mantle endpoint the agent calls. Can differ from var.region when Mantle isn't offered there."
+  description = "Region the agent calls Bedrock (bedrock-runtime) in."
+  type        = string
+}
+
+variable "bedrock_inference_profile" {
+  description = "Inference profile the agent may invoke, e.g. global.anthropic.claude-opus-4-6-v1."
+  type        = string
+}
+
+variable "bedrock_foundation_model" {
+  description = "Foundation model behind bedrock_inference_profile, e.g. anthropic.claude-opus-4-6-v1."
   type        = string
 }
 

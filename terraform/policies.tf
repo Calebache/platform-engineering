@@ -41,24 +41,37 @@ data "aws_iam_policy_document" "image_builder" {
 }
 
 # --- sre-agent ------------------------------------------------------------
+
+locals {
+  bedrock_profile_arn = "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_inference_profile}"
+}
+
 # Can call Claude on Bedrock and append audit records. Nothing else: any
 # other AWS call (doc.md §17) returns AccessDenied. It cannot read, delete
 # or list audit records.
 
 data "aws_iam_policy_document" "sre_agent" {
+  # One model, through one inference profile. The global profile routes to
+  # whichever region has capacity, so the foundation model is allowed in any
+  # region, but only when the request comes through that profile.
   statement {
-    sid     = "InvokeClaudeOnBedrock"
-    actions = ["bedrock-mantle:CreateInference"]
-    # TODO: scope to the Opus 5.5 model ARN once the bedrock-mantle resource
-    # ARN format is confirmed in the IAM service authorization reference.
-    resources = ["*"]
+    sid       = "InvokeClaudeThroughProfile"
+    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = [local.bedrock_profile_arn]
+  }
 
-    # The Mantle endpoint doesn't exist in the cluster region, so the agent
-    # calls bedrock_region; allow nothing else.
+  statement {
+    sid     = "InvokeClaudeModelBehindProfile"
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/${var.bedrock_foundation_model}",
+      "arn:aws:bedrock:::foundation-model/${var.bedrock_foundation_model}",
+    ]
+
     condition {
       test     = "StringEquals"
-      variable = "aws:RequestedRegion"
-      values   = [var.bedrock_region]
+      variable = "bedrock:InferenceProfileArn"
+      values   = [local.bedrock_profile_arn]
     }
   }
 

@@ -108,7 +108,7 @@ func (s *memStore) put(_ context.Context, key string, body []byte) error {
 func testCfg() workerConfig {
 	return workerConfig{
 		service: "payment-api", alert: "PaymentApiHighErrorRate", incidentID: "inc-test", environment: "dev",
-		modelID: "anthropic.claude-opus-5-5", mergeTimeout: time.Second, pollInterval: time.Millisecond,
+		modelID: defaultModel, mergeTimeout: time.Second, pollInterval: time.Millisecond,
 		verifyInterval: time.Millisecond, verifyAttempts: 2,
 		limits: limits{maxToolCalls: 40, maxModelCalls: 60, maxOutputTotal: 100000},
 	}

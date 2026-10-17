@@ -8,8 +8,12 @@ account_id        = "103544553431"
 state_bucket_name = "calebache-platform-tfstate-103544553431"
 domain_name       = "calebache.com"
 
-# bedrock-mantle.ca-central-1.api.aws doesn't exist, so the agent calls Claude in us-east-1.
-bedrock_region = "us-east-1"
+# The agent's model. This account can't use Claude Opus 4.7+ (or Bedrock's
+# Mantle Messages endpoint), so the agent uses Opus 4.6 through bedrock-runtime
+# in the cluster's own region; the global profile picks where inference runs.
+bedrock_region            = "ca-central-1"
+bedrock_inference_profile = "global.anthropic.claude-opus-4-6-v1"
+bedrock_foundation_model  = "anthropic.claude-opus-4-6-v1"
 
 # Network: public + private subnet in each of two AZs (EKS control plane
 # needs two). Nodes and the single NAT gateway stay in one AZ.

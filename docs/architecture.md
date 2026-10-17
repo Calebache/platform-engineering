@@ -22,7 +22,7 @@ Fix → Validate → Approve → Deploy → Verify → Audit.**
 | Cluster | EKS `agentic-sre-dev`, managed node group, 2–3 × `t3.medium` |
 | Git repository | `Calebache/platform-engineering` (private) |
 | Public domain | `*.calebache.com` (Route53) |
-| Agent model | Claude Opus 5.5 on Amazon Bedrock, called in `us-east-1` |
+| Agent model | Claude Opus 4.6 on Amazon Bedrock (`bedrock-runtime`, global inference profile, called in `ca-central-1`) |
 
 The environment is disposable: created with one `terraform apply`, removed
 with `scripts/destroy-env.sh dev`.
@@ -106,7 +106,7 @@ Alertmanager ──webhook──> orchestrator ──creates──> incident Job
                                                      │                    ├──> Prometheus (named queries)
                                                      │                    ├──> Argo CD (read)
                                                      │                    └──> GitHub (read, PRs)
-                                                     ├──> Bedrock (Claude Opus 5.5, us-east-1)
+                                                     ├──> Bedrock (Claude Opus 4.6, global profile)
                                                      └──> S3 audit record
 ```
 
@@ -130,8 +130,8 @@ Alertmanager ──webhook──> orchestrator ──creates──> incident Job
 
 ### Incident Jobs
 
-- **Identity.** Workers run as `sre-agent`: Bedrock in us-east-1 and
-  `PutObject` on `audit/*` only, no Kubernetes RBAC, no GitHub credential.
+- **Identity.** Workers run as `sre-agent`: one Bedrock model (Opus 4.6,
+  through its inference profile) and `PutObject` on `audit/*` only, no Kubernetes RBAC, no GitHub credential.
   The only token mounted is a short-lived one for the MCP server's
   audience. The orchestrator runs as `sre-agent-orchestrator`, which can
   create Jobs and read their Pods in its own namespace and nothing else.

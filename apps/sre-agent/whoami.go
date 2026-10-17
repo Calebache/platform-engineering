@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -77,31 +76,30 @@ func runWhoami(ctx context.Context, args []string) error {
 	report("DENY  s3:ListAllMyBuckets", isAccessDenied(err), errText(err, "unexpectedly allowed"))
 
 	if !*skipModel {
-		mc, err := bedrock.NewMantleClient(ctx, bedrock.MantleClientConfig{AWSRegion: bedrockRegion})
+		model := envOr("MODEL_ID", defaultModel)
+		bm, err := newBedrockModel(ctx, bedrockRegion)
 		if err == nil {
 			var msg *anthropic.Message
-			msg, err = mc.Messages.New(ctx, anthropic.MessageNewParams{
-				Model: anthropic.Model(envOr("MODEL_ID", "anthropic.claude-opus-5-5")), MaxTokens: 64,
-				OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow},
-				Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("Reply with the single word: ready"))},
+			msg, err = bm.New(ctx, anthropic.MessageNewParams{
+				Model: anthropic.Model(model), MaxTokens: 64,
+				Messages: []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("Reply with the single word: ready"))},
 			})
 			if err == nil {
 				err = textOf(msg)
 			}
 		}
-		report("ALLOW bedrock-mantle:CreateInference ("+bedrockRegion+")", err == nil, errText(err, "model replied"))
+		report("ALLOW bedrock:InvokeModel "+model, err == nil, errText(err, "model replied"))
 
-		// The role allows Bedrock only in bedrock_region; any other region is refused.
-		if bedrockRegion != "us-west-2" {
-			mc2, err := bedrock.NewMantleClient(ctx, bedrock.MantleClientConfig{AWSRegion: "us-west-2"})
-			if err == nil {
-				_, err = mc2.Messages.New(ctx, anthropic.MessageNewParams{
-					Model: anthropic.Model(envOr("MODEL_ID", "anthropic.claude-opus-5-5")), MaxTokens: 16,
-					Messages: []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("x"))},
-				})
-			}
-			report("DENY  bedrock-mantle:CreateInference (us-west-2)", err != nil && strings.Contains(strings.ToLower(err.Error()), "denied"), errText(err, "unexpectedly allowed"))
+		// The role allows exactly one model; any other is refused by IAM,
+		// even one the account itself can use.
+		other := "global.anthropic.claude-sonnet-4-6"
+		if bm != nil {
+			_, err = bm.New(ctx, anthropic.MessageNewParams{
+				Model: anthropic.Model(other), MaxTokens: 16,
+				Messages: []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("x"))},
+			})
 		}
+		report("DENY  bedrock:InvokeModel "+other, err != nil && strings.Contains(strings.ToLower(err.Error()), "not authorized"), errText(err, "unexpectedly allowed"))
 	}
 
 	if len(failures) > 0 {

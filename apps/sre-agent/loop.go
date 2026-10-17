@@ -86,7 +86,9 @@ func (r *incidentRun) phase(ctx context.Context, name, prompt string, allowed ma
 		resp, err := r.model.New(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.Model(r.modelID),
 			MaxTokens: 16000,
-			// Thinking is always on for Claude Opus 5.5; effort sets its depth.
+			// Opus 4.6 runs without thinking unless adaptive is set explicitly;
+			// effort sets its depth.
+			Thinking:     anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}},
 			OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortHigh},
 			// Explicit breakpoint (Bedrock has no automatic caching): tools and
 			// system prompt are identical across turns and phases.

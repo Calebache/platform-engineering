@@ -14,9 +14,13 @@ output "kubeconfig_command" {
   value = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"
 }
 
-# Pass to the agent as its Bedrock client region (not AWS_REGION).
+# The agent sets its Bedrock client region explicitly from this, never from AWS_REGION.
 output "bedrock_region" {
   value = var.bedrock_region
+}
+
+output "bedrock_inference_profile" {
+  value = var.bedrock_inference_profile
 }
 
 output "vpc_id" {

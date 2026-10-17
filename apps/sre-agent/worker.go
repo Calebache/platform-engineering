@@ -102,7 +102,7 @@ func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) err
 		return errors.New("--service, --alert and --incident-id are required")
 	}
 	cfg.environment = envOr("ENVIRONMENT", "dev")
-	cfg.modelID = envOr("MODEL_ID", "anthropic.claude-opus-5-5")
+	cfg.modelID = envOr("MODEL_ID", defaultModel)
 	cfg.demoDirectFix = os.Getenv("DEMO_ATTEMPT_DIRECT_FIX") == "true"
 	cfg.mergeTimeout = durationEnv("MERGE_TIMEOUT", 45*time.Minute)
 	cfg.verifyInterval = durationEnv("VERIFY_INTERVAL", 2*time.Minute)
@@ -111,8 +111,8 @@ func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) err
 	cfg.limits = limits{maxToolCalls: intEnv("MAX_TOOL_CALLS", 40), maxModelCalls: intEnv("MAX_MODEL_CALLS", 60), maxOutputTotal: int64(intEnv("MAX_OUTPUT_TOKENS", 120000))}
 	logger = logger.With("incident", cfg.incidentID, "service", cfg.service, "alert", cfg.alert)
 
-	// Bedrock runs in bedrock_region (us-east-1), never AWS_REGION: the Mantle
-	// endpoint doesn't exist in the cluster's region.
+	// The Bedrock region is configured explicitly (bedrock_region in
+	// Terraform), never inherited from AWS_REGION.
 	bedrockRegion, err := mustEnv("BEDROCK_REGION")
 	if err != nil {
 		return err
@@ -125,9 +125,9 @@ func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) err
 	if err != nil {
 		return fmt.Errorf("AWS config: %w", err)
 	}
-	model, err := bedrock.NewMantleClient(ctx, bedrock.MantleClientConfig{AWSRegion: bedrockRegion})
+	model, err := newBedrockModel(ctx, bedrockRegion)
 	if err != nil {
-		return fmt.Errorf("Bedrock client: %w", err)
+		return err
 	}
 	session, closeMCP, err := connectMCP(ctx, envOr("MCP_ENDPOINT", "http://mcp-server.mcp-server.svc/mcp"),
 		envOr("MCP_TOKEN_FILE", "/var/run/secrets/mcp/token"))
@@ -141,18 +141,34 @@ func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) err
 		Alert: cfg.alert, Service: cfg.service, Environment: cfg.environment, Model: cfg.modelID,
 		StartedAt: time.Now().UTC().Format(time.RFC3339), Phase: "started", Outcome: "in_progress",
 		PolicyResult: "n/a", SecurityResult: "not available: CI checks aren't wired up yet",
+		ToolsUsed: []string{}, ToolCalls: []ToolCall{},
 	}
 	aud := newAuditor(&s3Store{client: s3.NewFromConfig(awsCfg), bucket: bucket}, rec, logger)
-	outcome := investigate(ctx, cfg, &mantleModel{svc: model}, session, aud, logger)
+	outcome := investigate(ctx, cfg, model, session, aud, logger)
 	writeTermination(outcome, aud.snapshot())
 	logger.Info("incident finished", "outcome", outcome)
 	return nil
 }
 
-type mantleModel struct{ svc *bedrock.MantleClient }
+// defaultModel is Claude Opus 4.6 through its global cross-region inference
+// profile. Newer Claude models (Opus 4.7+, Mantle's Messages endpoint) aren't
+// enabled for this AWS account; see CLAUDE.md "Agent LLM".
+const defaultModel = "global.anthropic.claude-opus-4-6-v1"
 
-func (m *mantleModel) New(ctx context.Context, p anthropic.MessageNewParams) (*anthropic.Message, error) {
-	return m.svc.Messages.New(ctx, p)
+// bedrockModel calls Claude through bedrock-runtime (InvokeModel). The SDK
+// translates the Messages API to it, so the loop is unchanged.
+type bedrockModel struct{ client anthropic.Client }
+
+func newBedrockModel(ctx context.Context, region string) (*bedrockModel, error) {
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("AWS config for Bedrock: %w", err)
+	}
+	return &bedrockModel{client: anthropic.NewClient(bedrock.WithConfig(awsCfg))}, nil
+}
+
+func (m *bedrockModel) New(ctx context.Context, p anthropic.MessageNewParams) (*anthropic.Message, error) {
+	return m.client.Messages.New(ctx, p)
 }
 
 // investigate runs the incident lifecycle and returns the outcome. It never
