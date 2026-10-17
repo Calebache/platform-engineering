@@ -6,7 +6,7 @@
 # must be removed while those controllers are still running, otherwise the
 # NLB's ENIs block VPC deletion and DNS records are orphaned. So:
 #   1. stop the root app from re-creating anything,
-#   2. delete every Application from wave 0 upwards (Gateway, routes, apps),
+#   2. delete every Application from wave 1 upwards (Gateway, routes, apps),
 #   3. wait until no LoadBalancer Services or HTTPRoutes remain,
 #   4. run terraform destroy, which removes the controllers and everything else.
 #
@@ -20,6 +20,8 @@ PROJECT="${PROJECT:-agentic-sre}"
 REGION="${REGION:-ca-central-1}"
 CLUSTER="${CLUSTER:-${PROJECT}-${ENVIRONMENT}}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
+# First wave that is not a controller: platform-config (Gateway) and up.
+TEARDOWN_FROM_WAVE="${TEARDOWN_FROM_WAVE:-1}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TFVARS="environments/${ENVIRONMENT}.tfvars"
 
@@ -60,16 +62,18 @@ if aws eks describe-cluster --region "$REGION" --name "$CLUSTER" >/dev/null 2>&1
     log "Pausing auto-sync on the root app"
     kubectl -n argocd patch application root --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}' >/dev/null
 
-    # Wave >= 0 is config and workloads (Gateway, routes, apps); wave < 0 is
-    # the controllers that must outlive them.
+    # Wave >= TEARDOWN_FROM_WAVE is config and workloads (Gateway, routes,
+    # apps); lower waves are the controllers (incl. the AWS Load Balancer
+    # Controller at wave 0) that must outlive them.
     apps="$(kubectl -n argocd get applications -o json | python3 -I -c '
 import sys, json
+threshold = int(sys.argv[1])
 for a in json.load(sys.stdin)["items"]:
     name = a["metadata"]["name"]
     wave = int((a["metadata"].get("annotations") or {}).get("argocd.argoproj.io/sync-wave", "0"))
-    if name != "root" and wave >= 0:
+    if name != "root" and wave >= threshold:
         print(name)
-')"
+' "$TEARDOWN_FROM_WAVE")"
     for app in $apps; do
       log "Deleting Application $app (cascades to its resources)"
       kubectl -n argocd delete application "$app" --wait=false >/dev/null

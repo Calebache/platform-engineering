@@ -17,18 +17,21 @@ Terraform follows a **root module + one module per resource type + per-environme
 - `scripts/store-argocd-github-app.sh`: Argo CD reads the private repo through a **read-only GitHub App** (Contents: Read-only, installed on this repo only), not a deploy key. Argo CD mints installation tokens that expire after an hour, so no static credential goes over the wire. The app is created once in GitHub's UI; the steps are in the script header. Run the script with `APP_ID` and `PEM_FILE`. It finds the installation ID, mints and revokes a probe token to check that permissions are exactly read-only, and stores `{appId, installationId, privateKey}` in Secrets Manager (`agentic-sre/argocd/github-app`). The secret lives outside Terraform and outlives environments. To rotate, re-run it with a new `.pem`, bump `argocd_repo_secret_revision`, and apply. Repo URLs must be **HTTPS** (`https://github.com/Calebache/platform-engineering.git`), because GitHub App auth doesn't work over SSH. The SRE agent's PR-writing identity will be a **separate** app with write permissions; never widen this one.
 - `gitops/apps/<env>/` is what the root Application syncs: one Argo CD `Application` per component, plus the `platform` AppProject and the Envoy OCI repo Secret. Each Application needs `project: platform`, a sync-wave annotation and the `resources-finalizer.argocd.argoproj.io` finalizer. The AppProject's `sourceRepos` is an allow-list, so add a new chart repo in the same change as its Application.
 - `gitops/platform/<env>/` holds cluster-wide config, synced by the `platform-config` Application: ClusterIssuers, the EnvoyProxy/GatewayClass, the `public` Gateway and the HTTP→HTTPS redirect.
-- `scripts/destroy-env.sh <env>` is **the way to tear down**. Don't run `terraform destroy` directly. Argo CD creates AWS resources Terraform doesn't track (the NLB and Route53 records), so the script first pauses the root app, deletes every wave ≥ 0 Application, and waits until LoadBalancer Services and HTTPRoutes are gone while the controllers are still running. Then it runs `terraform destroy`. It uses a temporary kubeconfig.
+- `scripts/destroy-env.sh <env>` is **the way to tear down**. Don't run `terraform destroy` directly. Argo CD creates AWS resources Terraform doesn't track (the NLB and Route53 records), so the script first pauses the root app, deletes every wave ≥ 1 Application (`TEARDOWN_FROM_WAVE`), and waits until LoadBalancer Services and HTTPRoutes are gone while the controllers are still running. Then it runs `terraform destroy`. It uses a temporary kubeconfig.
 
 Sync waves (child Application health is enabled through a Lua check in the `argocd` module, so waves really wait):
 
 | Wave | Contents |
 |---|---|
 | -3 | `platform` AppProject, Envoy OCI repo Secret |
-| -2 | Envoy Gateway (installs the Gateway API CRDs), AWS Load Balancer Controller, cluster-autoscaler |
+| -2 | Envoy Gateway (installs the Gateway API CRDs), cluster-autoscaler |
 | -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source) |
-| 0 | `platform-config` (ClusterIssuers, GatewayClass, Gateway) |
-| 1 | Workloads: MCP server, agent runtime, payment-api (planned) |
-| 2 | Their HTTPRoutes (planned) |
+| 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager) |
+| 1 | `platform-config` (ClusterIssuers, GatewayClass, Gateway). This is the first wave `destroy-env.sh` removes. |
+| 2 | Workloads: MCP server, agent runtime, payment-api (planned) |
+| 3 | Their HTTPRoutes (planned) |
+
+Webhooks are the main failure mode here. A broken admission webhook blocks unrelated resources cluster-wide, which is how a flaky LB controller cert once stopped cert-manager's Services from being created. So: no chart-generated self-signed webhook certs (Argo CD re-renders them on every sync; use cert-manager), and no cluster-wide mutators that aren't needed. The LB controller's Service mutator is off, and the EnvoyProxy sets `loadBalancerClass: service.k8s.aws/nlb` itself.
 
 Ingress uses **Gateway API with Envoy Gateway**, not ingress-nginx, which was retired in March 2026 and gets no security fixes. Traffic flows: internet → NLB in the public subnets (created by the AWS Load Balancer Controller, IP targets) → Envoy pods in the private subnets → Services. TLS terminates at the Gateway with a `*.calebache.com` wildcard from Let's Encrypt (DNS-01, Route53).
 

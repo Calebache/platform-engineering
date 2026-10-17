@@ -15,6 +15,9 @@ spec:
         replicas: 2
       envoyService:
         type: LoadBalancer
+        # Claim the Service for the AWS Load Balancer Controller explicitly
+        # (its Service mutator webhook is disabled).
+        loadBalancerClass: service.k8s.aws/nlb
         annotations:
           service.beta.kubernetes.io/aws-load-balancer-type: external
           service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip

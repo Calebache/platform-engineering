@@ -1,13 +1,17 @@
 # Provisions the internet-facing NLB in front of Envoy Gateway. AWS
 # permissions come from Pod Identity (kube-system/aws-load-balancer-controller,
 # created by Terraform), so no role annotation is needed.
+#
+# Wave 0, after cert-manager: its webhook certificate comes from cert-manager.
+# The chart's default self-signed cert is regenerated on every Argo CD render,
+# which briefly breaks the webhook after each sync.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: aws-load-balancer-controller
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -27,6 +31,11 @@ spec:
         serviceAccount:
           create: true
           name: aws-load-balancer-controller
+        enableCertManager: true
+        # The mutator intercepts every Service created in the cluster, so any
+        # controller hiccup blocks unrelated workloads. Envoy's Service sets
+        # loadBalancerClass itself (EnvoyProxy "nlb"), so the mutator isn't needed.
+        enableServiceMutatorWebhook: false
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
