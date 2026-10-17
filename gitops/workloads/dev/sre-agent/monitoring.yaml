@@ -10,6 +10,10 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+      # sre_agent_incidents carries the *affected* service in its `service`
+      # label. Without this, Prometheus overwrites it with the scraped
+      # Kubernetes Service ("sre-agent") and alerts name the wrong service.
+      honorLabels: true
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
