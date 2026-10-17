@@ -36,19 +36,36 @@ module "eks" {
   )
 }
 
-module "ecr" {
-  source = "./modules/ecr"
+# --- Long-lived artifacts -------------------------------------------------
+# ECR repositories (images) and the audit bucket outlive every environment,
+# so they're created by scripts/bootstrap-artifacts.sh, not here. Terraform
+# only looks them up; a missing one fails the plan with a clear error.
 
-  repositories = var.ecr_repositories
-  force_delete = var.ecr_force_delete
+data "aws_ecr_repository" "app" {
+  for_each = toset(var.ecr_repositories)
+  name     = each.value
 }
 
 # One JSON record per agent execution (doc.md §16).
-module "audit_bucket" {
-  source = "./modules/s3-bucket"
+data "aws_s3_bucket" "audit" {
+  bucket = "${local.name}-audit-${var.account_id}"
+}
 
-  bucket_name   = "${local.name}-audit-${var.account_id}"
-  force_destroy = var.audit_bucket_force_destroy
+# These used to be managed here. Hand them over to the bootstrap script
+# without deleting them (and their images and records). No-op on a fresh
+# environment.
+removed {
+  from = module.ecr
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.audit_bucket
+  lifecycle {
+    destroy = false
+  }
 }
 
 module "github_oidc" {

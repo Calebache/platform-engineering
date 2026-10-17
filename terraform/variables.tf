@@ -127,21 +127,8 @@ variable "cluster_admin_principal_arns" {
 # --- ECR ------------------------------------------------------------------
 
 variable "ecr_repositories" {
-  description = "ECR repository names. Names are account-wide, so environments in one account must not overlap."
+  description = "ECR repositories the image-builder role may push to. Created by scripts/bootstrap-artifacts.sh; looked up, never managed, here."
   type        = list(string)
-}
-
-variable "ecr_force_delete" {
-  type    = bool
-  default = false
-}
-
-# --- Audit ----------------------------------------------------------------
-
-variable "audit_bucket_force_destroy" {
-  description = "Let `terraform destroy` delete the audit bucket with records in it."
-  type        = bool
-  default     = false
 }
 
 # --- Argo CD --------------------------------------------------------------

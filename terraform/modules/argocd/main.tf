@@ -105,6 +105,16 @@ resource "helm_release" "root_app" {
             prune    = true
             selfHeal = true
           }
+          # Argo CD doesn't retry a failed automated sync for the same commit
+          # on its own; on a fresh cluster that would leave bring-up stuck.
+          retry = {
+            limit = 10
+            backoff = {
+              duration    = "15s"
+              factor      = 2
+              maxDuration = "3m"
+            }
+          }
         }
       }
     }

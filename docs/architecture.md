@@ -24,17 +24,18 @@ Fix → Validate → Approve → Deploy → Verify → Audit.**
 | Public domain | `*.calebache.com` (Route53) |
 | Agent model | Claude Opus 4.6 on Amazon Bedrock (`bedrock-runtime`, global inference profile, called in `ca-central-1`) |
 
-The environment is disposable: created with one `terraform apply`, removed
-with `scripts/destroy-env.sh dev`.
+The environment is disposable: created and verified with
+`scripts/create-env.sh dev` (one `terraform apply`), removed with
+`scripts/destroy-env.sh dev`. Images and audit records survive the cycle.
 
 ## Ownership boundaries
 
 | Layer | Owner | Contents |
 |---|---|---|
-| Cloud substrate | Terraform (`terraform/`) | VPC, EKS, ECR, IAM, GitHub OIDC, Pod Identity, Secrets Manager entries, audit bucket |
+| Cloud substrate | Terraform (`terraform/`) | VPC, EKS, IAM, GitHub OIDC, Pod Identity, Secrets Manager entries |
 | GitOps bootstrap | Terraform `argocd` module | Argo CD and one root Application, nothing more |
 | Everything in the cluster | Argo CD (`gitops/`) | Platform controllers, config, workloads |
-| Out-of-band, outlives environments | Scripts (`scripts/`) | Terraform state bucket, GitHub App credentials |
+| Out-of-band, outlives environments | Scripts (`scripts/`) | Terraform state bucket, ECR repositories, audit bucket, GitHub App credentials |
 
 Nothing in the cluster is changed by hand or by Terraform after bootstrap; a
 change is a commit.
@@ -84,8 +85,8 @@ done in Secrets Manager. Nothing secret is stored in Git.
 | Wave | Component | Role |
 |---|---|---|
 | -3 | `platform` AppProject | Allow-list of source repositories |
-| -2 | Envoy Gateway, kube-prometheus-stack, cluster-autoscaler | Gateway API, monitoring CRDs, node scaling |
-| -1 | cert-manager, external-dns, External Secrets | TLS, DNS records, secrets |
+| -2 | Envoy Gateway, kube-prometheus-stack | Gateway API, monitoring CRDs |
+| -1 | cert-manager, external-dns, External Secrets, cluster-autoscaler | TLS, DNS records, secrets, node scaling |
 | 0 | AWS Load Balancer Controller | NLB for the Gateway |
 | 1 | platform-config | ClusterIssuers, GatewayClass, Gateway, ClusterSecretStore |
 | 2 | Workloads | payment-api, mcp-server, sre-agent |

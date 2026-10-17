@@ -38,12 +38,9 @@ node_max_pods = 110
 cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
 cluster_admin_principal_arns         = []
 
-# ECR
+# ECR repositories and the audit bucket outlive the environment: created by
+# scripts/bootstrap-artifacts.sh, only looked up here.
 ecr_repositories = ["mcp-server", "sre-agent", "payment-api"]
-ecr_force_delete = true
-
-# Audit
-audit_bucket_force_destroy = true
 
 # Argo CD: root app syncs gitops/apps/dev from this branch.
 gitops_target_revision = "main"

@@ -1,3 +1,6 @@
+# Wave -1, after kube-prometheus-stack: it ships a ServiceMonitor, whose CRD
+# that chart installs.
+#
 # Scales the managed node group between its min and max size (2-3 in dev).
 # Finds the node group through the ASG tags EKS adds automatically; AWS
 # permissions come from Pod Identity (kube-system/cluster-autoscaler).
@@ -7,7 +10,7 @@ metadata:
   name: cluster-autoscaler
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-wave: "-1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -45,3 +48,12 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    # Argo CD doesn't retry a failed automated sync for the same commit on
+    # its own; on a fresh cluster transient failures (a CRD or webhook not
+    # ready yet) would otherwise leave the app stuck.
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m

@@ -33,11 +33,11 @@ output "nat_gateway_public_ip" {
 }
 
 output "ecr_repository_urls" {
-  value = module.ecr.repository_urls
+  value = { for name, r in data.aws_ecr_repository.app : name => r.repository_url }
 }
 
 output "audit_bucket_name" {
-  value = module.audit_bucket.bucket_name
+  value = data.aws_s3_bucket.audit.bucket
 }
 
 output "route53_zone_id" {

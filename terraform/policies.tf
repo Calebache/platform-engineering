@@ -36,7 +36,7 @@ data "aws_iam_policy_document" "image_builder" {
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
-    resources = values(module.ecr.repository_arns)
+    resources = [for r in data.aws_ecr_repository.app : r.arn]
   }
 }
 
@@ -78,7 +78,7 @@ data "aws_iam_policy_document" "sre_agent" {
   statement {
     sid       = "WriteAuditRecords"
     actions   = ["s3:PutObject"]
-    resources = ["${module.audit_bucket.bucket_arn}/audit/*"]
+    resources = ["${data.aws_s3_bucket.audit.arn}/audit/*"]
   }
 }
 
