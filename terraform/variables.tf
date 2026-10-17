@@ -98,6 +98,11 @@ variable "node_max_size" {
   type = number
 }
 
+variable "node_max_pods" {
+  description = "Kubelet maxPods per node; needs VPC CNI prefix delegation (enabled in the eks module) above the ENI-IP limit."
+  type        = number
+}
+
 variable "cluster_endpoint_public_access_cidrs" {
   description = "CIDRs allowed to reach the public EKS API endpoint."
   type        = list(string)

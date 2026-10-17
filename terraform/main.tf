@@ -28,6 +28,7 @@ module "eks" {
   node_min_size       = var.node_min_size
   node_desired_size   = var.node_desired_size
   node_max_size       = var.node_max_size
+  node_max_pods       = var.node_max_pods
 
   cluster_admins = merge(
     { "terraform-deployer" = module.github_oidc.role_arns["terraform-deployer-role"] },

@@ -53,6 +53,11 @@ variable "node_disk_size" {
   default     = 20
 }
 
+variable "node_max_pods" {
+  description = "Kubelet maxPods. With VPC CNI prefix delegation, AWS recommends 110 for instances under 30 vCPUs."
+  type        = number
+}
+
 variable "node_min_size" {
   type = number
 }

@@ -24,6 +24,9 @@ node_instance_types = ["t3.medium"]
 node_min_size       = 2
 node_desired_size   = 2
 node_max_size       = 3
+# With prefix delegation; AWS's recommended value for instances under 30 vCPUs.
+# CPU and memory, not IP addresses, now limit how many pods fit.
+node_max_pods = 110
 
 # Open so GitHub-hosted runners can reach the API for the Argo CD bootstrap;
 # access still requires an IAM identity with an EKS access entry. To lock

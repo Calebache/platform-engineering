@@ -88,16 +88,76 @@ resource "aws_iam_role_policy_attachment" "node" {
   policy_arn = each.value
 }
 
+# No image_id: EKS still picks the AMI for ami_type and supplies the bootstrap
+# config; the NodeConfig below is merged into it by nodeadm (AL2023).
+resource "aws_launch_template" "node" {
+  name_prefix            = "${var.cluster_name}-node-"
+  update_default_version = true
+
+  # Must match the CNI's prefix delegation, or kubelet keeps the ENI-IP limit.
+  user_data = base64encode(<<-EOT
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+    --BOUNDARY
+    Content-Type: application/node.eks.aws
+
+    ---
+    apiVersion: node.eks.aws/v1alpha1
+    kind: NodeConfig
+    spec:
+      kubelet:
+        config:
+          maxPods: ${var.node_max_pods}
+
+    --BOUNDARY--
+  EOT
+  )
+
+  # IMDSv2 only, and a hop limit of 1 so pods (one network hop away) can't
+  # reach instance metadata and borrow the node role. Workloads get AWS
+  # access only through their own Pod Identity roles.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size           = var.node_disk_size
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.cluster_name}-node"
+    }
+  }
+}
+
 resource "aws_eks_node_group" "default" {
-  cluster_name    = aws_eks_cluster.this.name
-  node_group_name = "default"
-  node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = var.node_subnet_ids
+  cluster_name = aws_eks_cluster.this.name
+  # A prefix plus create_before_destroy: changes that force a new node group
+  # bring the replacement up first, then drain and delete the old one.
+  node_group_name_prefix = "default-"
+  node_role_arn          = aws_iam_role.node.arn
+  subnet_ids             = var.node_subnet_ids
 
   ami_type       = var.node_ami_type
   capacity_type  = var.node_capacity_type
   instance_types = var.node_instance_types
-  disk_size      = var.node_disk_size
+
+  launch_template {
+    id      = aws_launch_template.node.id
+    version = aws_launch_template.node.latest_version
+  }
 
   # EKS tags the backing ASG with k8s.io/cluster-autoscaler/* automatically,
   # which cluster-autoscaler uses for auto-discovery.
@@ -113,7 +173,8 @@ resource "aws_eks_node_group" "default" {
 
   # cluster-autoscaler owns desired size after creation.
   lifecycle {
-    ignore_changes = [scaling_config[0].desired_size]
+    create_before_destroy = true
+    ignore_changes        = [scaling_config[0].desired_size]
   }
 
   depends_on = [
@@ -133,6 +194,17 @@ resource "aws_eks_addon" "before_nodes" {
   addon_name                  = each.value
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
+
+  # Prefix delegation: the CNI assigns /28 prefixes to each ENI instead of
+  # single IPs, lifting the per-node pod limit from the ENI-IP ceiling
+  # (17 on t3.medium) to node_max_pods. Kubelet's maxPods is set to match in
+  # the launch template.
+  configuration_values = each.value == "vpc-cni" ? jsonencode({
+    env = {
+      ENABLE_PREFIX_DELEGATION = "true"
+      WARM_PREFIX_TARGET       = "1"
+    }
+  }) : null
 }
 
 resource "aws_eks_addon" "coredns" {

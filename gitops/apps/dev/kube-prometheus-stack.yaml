@@ -88,9 +88,10 @@ spec:
           sidecar:
             dashboards:
               searchNamespace: ALL
+          # 256Mi was OOM-killed: Grafana plus its dashboard sidecars need more.
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { memory: 256Mi }
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 512Mi }
 
         kube-state-metrics:
           resources:
