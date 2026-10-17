@@ -23,4 +23,7 @@ for f in "$out"/*.yml; do
   [[ -s "$f" ]] && files+=("${f#"$REPO_ROOT"/}")
 done
 (( ${#files[@]} > 0 )) || { echo "no PrometheusRules found" >&2; exit 1; }
+# mktemp makes the directory 0700; promtool may run as another user (the
+# Prometheus image runs as nobody), so let it read the rule files.
+chmod -R a+rX "$out"
 $PROMTOOL check rules "${files[@]}"
