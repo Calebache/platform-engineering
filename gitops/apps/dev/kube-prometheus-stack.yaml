@@ -46,6 +46,12 @@ spec:
           # is checked with promtool in CI instead.
           admissionWebhooks:
             enabled: false
+          # Its TLS listener mounts the cert the webhook's hook Job would have
+          # created; with the webhook off that Secret never exists and the pod
+          # hangs in ContainerCreating. Nothing needs HTTPS to it without the
+          # webhook.
+          tls:
+            enabled: false
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 256Mi }
