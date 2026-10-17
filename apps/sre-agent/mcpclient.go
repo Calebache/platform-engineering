@@ -18,6 +18,8 @@ type toolSession interface {
 	listTools(ctx context.Context) ([]*mcp.Tool, error)
 	callTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error)
 	prompt(ctx context.Context, name string, args map[string]string) (string, error)
+	listResources(ctx context.Context) ([]*mcp.Resource, error)
+	readResource(ctx context.Context, uri string) (string, error)
 }
 
 type mcpSession struct{ s *mcp.ClientSession }
@@ -63,6 +65,29 @@ func (m *mcpSession) prompt(ctx context.Context, name string, args map[string]st
 		}
 	}
 	return b.String(), nil
+}
+
+func (m *mcpSession) listResources(ctx context.Context) ([]*mcp.Resource, error) {
+	var out []*mcp.Resource
+	for r, err := range m.s.Resources(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (m *mcpSession) readResource(ctx context.Context, uri string) (string, error) {
+	r, err := m.s.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		return "", err
+	}
+	var parts []string
+	for _, c := range r.Contents {
+		parts = append(parts, c.Text)
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 // resultText flattens an MCP tool result for the model: structured content

@@ -55,6 +55,34 @@ type fakeSession struct {
 	errRatio float64
 	alert    string // alert state returned by get_incident_context
 	prMerged bool
+	reads    []string // resource URIs that reached the server
+}
+
+const runbookURI = "platform://services/payment-api/runbook"
+
+var fakeResources = map[string]string{
+	runbookURI:                               "## Known causes\n| `lookup <host>: no such host` | wrong DATABASE_HOST | Git change: restore postgres.payment-api.svc.cluster.local |",
+	"platform://services/payment-api/readme": "payment-api README",
+	"platform://policy/mcp":                  "package mcp.authz",
+}
+
+func (f *fakeSession) listResources(context.Context) ([]*mcp.Resource, error) {
+	var out []*mcp.Resource
+	for uri := range fakeResources {
+		out = append(out, &mcp.Resource{URI: uri, Title: uri, Description: "doc"})
+	}
+	return out, nil
+}
+
+func (f *fakeSession) readResource(_ context.Context, uri string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = append(f.reads, uri)
+	text, ok := fakeResources[uri]
+	if !ok {
+		return "", fmt.Errorf("denied by policy\nresources/read %q is not permitted", uri)
+	}
+	return text, nil
 }
 
 func (f *fakeSession) listTools(context.Context) ([]*mcp.Tool, error) {
@@ -201,6 +229,73 @@ func TestDatabaseHostIncidentEndToEnd(t *testing.T) {
 	body, ok := store.writes["audit/2026/10/17/inc-test.json"]
 	if len(store.writes) != 1 || !ok || !strings.Contains(string(body), `"outcome": "resolved"`) {
 		t.Errorf("audit writes: %v", keysOf(store.writes))
+	}
+}
+
+// The model reads platform docs through read_resource in every phase; the
+// worker pre-fetches the runbook for the investigation, and URIs outside
+// resources/list never reach the server.
+func TestAgentReadsRunbook(t *testing.T) {
+	sess := &fakeSession{errRatio: 0.002, prMerged: true}
+	turns := []string{
+		// investigate: runbook already in the prompt; a URI not in the catalogue is refused locally
+		toolUse("read_resource", map[string]any{"uri": "file:///etc/passwd"}),
+		toolUse("submit_findings", map[string]any{"hypothesis": "wrong DATABASE_HOST", "confidence": "high",
+			"evidence": []string{"no such host"}, "remediation_path": "pull_request"}),
+		// remediate: a fresh conversation, so the model checks the runbook allows the fix
+		toolUse("read_resource", map[string]any{"uri": runbookURI}),
+		toolUse("create_pull_request", map[string]any{"branch": "agent/fix-db-host", "title": "fix", "body": "b",
+			"files": []map[string]string{{"path": "gitops/workloads/dev/payment-api/deployment.yaml", "content": "x"}}}),
+		toolUse("submit_remediation", map[string]any{"status": "pull_request_opened", "summary": "restore DATABASE_HOST per runbook"}),
+		toolUse("submit_verification", map[string]any{"status": "recovered", "evidence": []string{"error ratio 0.2%"}}),
+	}
+	outcome, rec, model, _ := runIncident(t, testCfg(), turns, sess)
+	if outcome != "resolved" {
+		t.Fatalf("outcome %q, error %q", outcome, rec.Error)
+	}
+
+	// Pre-fetch plus the model's own read; the bad URI never reached the server.
+	if strings.Join(sess.reads, ",") != runbookURI+","+runbookURI {
+		t.Errorf("resource reads at the server: %v", sess.reads)
+	}
+	first, _ := json.Marshal(model.requests[0].Messages[0])
+	if !strings.Contains(string(first), "Known causes") || !strings.Contains(string(first), "don't need to read it again") {
+		t.Errorf("runbook not pre-fetched into the investigate prompt: %s", first)
+	}
+	// The model's read in the remediate phase returned the runbook text.
+	result, _ := json.Marshal(model.requests[3].Messages[len(model.requests[3].Messages)-1])
+	if !strings.Contains(string(result), "wrong DATABASE_HOST") {
+		t.Errorf("read_resource result not returned to the model: %s", result)
+	}
+
+	var phases []string
+	for _, c := range rec.ToolCalls {
+		if c.Tool == readResourceTool {
+			phases = append(phases, c.Phase+":"+c.Decision)
+			if !strings.Contains(c.Args, "uri") {
+				t.Errorf("resource read audited without its URI: %+v", c)
+			}
+		}
+	}
+	if got := strings.Join(phases, ","); got != "investigate:allowed,investigate:error,remediate:allowed" {
+		t.Errorf("audited resource reads: %s", got)
+	}
+	if !contains(rec.ToolsUsed, readResourceTool) {
+		t.Errorf("tools_used lacks read_resource: %v", rec.ToolsUsed)
+	}
+	// Offered in every phase, restricted to the listed URIs.
+	for i, req := range model.requests {
+		if !contains(toolNames(req), readResourceTool) {
+			t.Errorf("request %d lacks read_resource: %v", i, toolNames(req))
+		}
+	}
+	for _, tool := range model.requests[0].Tools {
+		if tool.OfTool.Name == readResourceTool {
+			enum, _ := json.Marshal(tool.OfTool.InputSchema.Properties)
+			if !strings.Contains(string(enum), runbookURI) || strings.Contains(string(enum), "file://") {
+				t.Errorf("read_resource enum: %s", enum)
+			}
+		}
 	}
 }
 

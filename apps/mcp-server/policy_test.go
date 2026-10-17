@@ -66,3 +66,20 @@ func TestPolicyDecisions(t *testing.T) {
 		})
 	}
 }
+
+// The agent reads every catalogued resource through read_resource, so the
+// policy must allow each one for the agent and none for anyone else.
+func TestPolicyAllowsCatalogue(t *testing.T) {
+	p, err := newPolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range resourceCatalogue {
+		if d := p.evaluate(context.Background(), policyInput{Caller: agent, Method: "resources/read", Name: e.uri}); !d.Allowed {
+			t.Errorf("%s denied for the agent: %s", e.uri, d.Reason)
+		}
+		if d := p.evaluate(context.Background(), policyInput{Caller: "system:serviceaccount:default:default", Method: "resources/read", Name: e.uri}); d.Allowed {
+			t.Errorf("%s allowed for an unknown caller", e.uri)
+		}
+	}
+}

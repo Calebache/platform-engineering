@@ -57,9 +57,17 @@ type incidentRun struct {
 	system  string
 
 	mcpTools  []anthropic.ToolUnionParam
+	resources []resourceInfo // from resources/list; the only URIs read_resource accepts
 	toolCalls int
 	prOpened  *pullRequestRef
 }
+
+// readResourceTool is local: the model reads platform documentation through
+// it, and the agent proxies to resources/read on the same MCP session, so the
+// read still passes the server's authentication, policy and audit.
+const readResourceTool = "read_resource"
+
+type resourceInfo struct{ uri, title, description string }
 
 type pullRequestRef struct {
 	Number int    `json:"number"`
@@ -128,7 +136,17 @@ func (r *incidentRun) phase(ctx context.Context, name, prompt string, allowed ma
 				r.audit.recordCall(ToolCall{Phase: name, Tool: use.Name, Decision: "local"})
 				return &phaseResult{tool: use.Name, input: raw}, nil
 			}
-			text, isErr := r.callMCP(ctx, name, use.Name, raw)
+			var text string
+			var isErr bool
+			if use.Name == readResourceTool {
+				var in struct {
+					URI string `json:"uri"`
+				}
+				_ = json.Unmarshal(raw, &in)
+				text, isErr = r.readResource(ctx, name, in.URI)
+			} else {
+				text, isErr = r.callMCP(ctx, name, use.Name, raw)
+			}
 			results = append(results, anthropic.NewToolResultBlock(use.ID, text, isErr))
 		}
 
@@ -209,12 +227,81 @@ func (r *incidentRun) callMCP(ctx context.Context, phase, tool string, raw json.
 	return text, false
 }
 
+// readResource fetches one catalogued resource through the MCP server. Like
+// callMCP, it counts against the tool-call limit and is always audited.
+func (r *incidentRun) readResource(ctx context.Context, phase, uri string) (string, bool) {
+	start := time.Now()
+	args, _ := json.Marshal(map[string]string{"uri": uri})
+	record := func(decision, reason string) {
+		r.audit.recordCall(ToolCall{
+			Phase: phase, Tool: readResourceTool, Decision: decision, Reason: reason,
+			Args: string(args), DurationMs: time.Since(start).Milliseconds(),
+		})
+	}
+
+	r.toolCalls++
+	if r.limits.maxToolCalls > 0 && r.toolCalls > r.limits.maxToolCalls {
+		record("error", "tool call limit")
+		return "Tool call limit for this incident reached. Submit your result now with what you have.", true
+	}
+	if !r.hasResource(uri) {
+		record("error", "not in resources/list")
+		return fmt.Sprintf("Unknown resource %q. Readable resources: %s", uri, strings.Join(r.resourceURIs(), ", ")), true
+	}
+	text, err := r.mcp.readResource(ctx, uri)
+	if err != nil {
+		// The server refuses non-tool methods with a protocol error.
+		if strings.Contains(err.Error(), "denied by policy") {
+			record("denied", err.Error())
+			r.logger.Warn("resource read denied by policy", "phase", phase, "uri", uri, "error", err)
+		} else {
+			record("error", err.Error())
+		}
+		return "Resource read failed: " + err.Error(), true
+	}
+	record("allowed", "")
+	return truncate(text, 32<<10), false
+}
+
+func (r *incidentRun) hasResource(uri string) bool {
+	for _, res := range r.resources {
+		if res.uri == uri {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *incidentRun) resourceURIs() []string {
+	out := make([]string, 0, len(r.resources))
+	for _, res := range r.resources {
+		out = append(out, res.uri)
+	}
+	return out
+}
+
 func (r *incidentRun) toolsFor(allowed map[string]bool, finish []localTool) []anthropic.ToolUnionParam {
 	var out []anthropic.ToolUnionParam
 	for _, t := range r.mcpTools {
 		if allowed[t.OfTool.Name] {
 			out = append(out, t)
 		}
+	}
+	if len(r.resources) > 0 {
+		var desc strings.Builder
+		desc.WriteString("Read platform documentation served by the MCP server (read-only, live from the main branch). Available resources:")
+		for _, res := range r.resources {
+			fmt.Fprintf(&desc, "\n- %s: %s. %s", res.uri, res.title, res.description)
+		}
+		t := anthropic.ToolParam{
+			Name:        readResourceTool,
+			Description: anthropic.String(desc.String()),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{"uri": map[string]any{"type": "string", "enum": r.resourceURIs()}},
+				Required:   []string{"uri"},
+			},
+		}
+		out = append(out, anthropic.ToolUnionParam{OfTool: &t})
 	}
 	for _, f := range finish {
 		t := anthropic.ToolParam{

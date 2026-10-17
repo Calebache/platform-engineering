@@ -74,6 +74,7 @@ If you restart the app before step 3, every query fails authentication. Those 50
 - **`investigate`** (the Job, SA `sre-agent`) runs the incident lifecycle (`worker.go`):
   - **Phases:** investigate → remediate (PR) or escalate → await merge (a deterministic poll of `get_pull_request`) → verify → audit.
   - **Each phase** is a manual Claude tool loop (`loop.go`) over the MCP tools allowed in that phase. The investigate phase is never offered write tools. The phase ends when the model calls a local `submit_*` tool, so results are structured.
+  - **Docs:** every phase also gets a local `read_resource {uri}` tool. It proxies to MCP `resources/read` on the same session, so the server's middleware still authenticates, authorizes and audits it. It accepts only URIs from `resources/list` (an enum in the schema, checked again locally) and counts against `MAX_TOOL_CALLS`. Reads appear in the audit record's `tool_calls`/`tools_used` as `read_resource`. The worker pre-fetches `platform://services/<svc>/runbook` into the investigate prompt.
   - **The code, not the model, decides:**
     - **The PR:** the agent trusts the recorded `create_pull_request` result over the model's report, and allows at most one PR per incident.
     - **Recovery:** it needs the model's verdict **and** `recoveryGate` (error ratio under 1%, alert not firing).

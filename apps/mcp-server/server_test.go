@@ -175,8 +175,9 @@ func TestAgentSessionEndToEnd(t *testing.T) {
 	if err != nil || !strings.Contains(rr.Contents[0].Text, "Known causes") {
 		t.Fatalf("runbook resource: %v", err)
 	}
-	if _, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///etc/passwd"}); err == nil {
-		t.Fatal("arbitrary resource must be refused")
+	// The agent tells a policy denial from other failures by this text.
+	if _, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///etc/passwd"}); err == nil || !strings.Contains(err.Error(), "denied by policy") {
+		t.Fatalf("arbitrary resource must be refused by policy: %v", err)
 	}
 
 	gp, err := s.GetPrompt(ctx, &mcp.GetPromptParams{Name: "investigate_incident",
