@@ -40,6 +40,7 @@ External Secrets (wave -1) is **the only way workloads get secrets**. Terraform'
 - **Logs.** JSON. A database failure logs `"database operation failed"` with the real error and a `request_id`, while the client gets a generic 500.
 - **The deliberate failure** is a commit changing `DATABASE_HOST` in `deployment.yaml`. Liveness and readiness intentionally don't check the database, so the bad version rolls out and returns 500s instead of stalling unready. Malformed IDs return 404, never 5xx, so junk requests can't trip the alert.
 - **Alerting.** `PaymentApiHighErrorRate` fires when more than 5% of non-probe requests are 5xx for 2 minutes; `PaymentApiDown` fires when nothing is scraped. A `payment-loadgen` Deployment (same image, `loadgen` mode) sends about 4 req/s through `https://payments.calebache.com`, so there's always traffic to measure.
+- **First 15 minutes after a fresh deploy.** The load generator starts before external-dns creates `payments.calebache.com`, so the VPC resolver caches NXDOMAIN for the zone's negative TTL (SOA minimum, 900 s). Expect `"error"` counts in its logs for up to 15 minutes; it recovers without intervention. To test before then, use `curl --resolve payments.calebache.com:443:<NLB IP>`.
 - **Pod Security.** The namespace enforces the `restricted` level.
 - **Testing.** Run `go test -race ./...` in `apps/payment-api`.
 
