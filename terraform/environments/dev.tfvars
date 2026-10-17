@@ -2,11 +2,10 @@
 #   terraform init -backend-config=environments/dev.s3.tfbackend
 #   terraform apply -var-file=environments/dev.tfvars
 
-environment       = "dev"
-region            = "ca-central-1"
-account_id        = "103544553431"
-state_bucket_name = "calebache-platform-tfstate-103544553431"
-domain_name       = "calebache.com"
+environment = "dev"
+region      = "ca-central-1"
+account_id  = "103544553431"
+domain_name = "calebache.com"
 
 # The agent's model. This account can't use Claude Opus 4.7+ (or Bedrock's
 # Mantle Messages endpoint), so the agent uses Opus 4.6 through bedrock-runtime
@@ -36,7 +35,13 @@ node_max_pods = 110
 # access still requires an IAM identity with an EKS access entry. To lock
 # down, set your public IP (`curl https://checkip.amazonaws.com`) as /32.
 cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
-cluster_admin_principal_arns         = []
+# Cluster admins besides the CI deployer role (always added). Whoever runs
+# `terraform apply` gets no implicit access, so the same admins exist whether
+# you or CI created the cluster. Update this if your SSO permission set is
+# re-provisioned (its role name changes).
+cluster_admin_principal_arns = [
+  "arn:aws:iam::103544553431:role/aws-reserved/sso.amazonaws.com/us-east-2/AWSReservedSSO_AdministratorAccess_43d3f2124756555b",
+]
 
 # ECR repositories and the audit bucket outlive the environment: created by
 # scripts/bootstrap-artifacts.sh, only looked up here.
@@ -44,6 +49,3 @@ ecr_repositories = ["mcp-server", "sre-agent", "payment-api"]
 
 # Argo CD: root app syncs gitops/apps/dev from this branch.
 gitops_target_revision = "main"
-
-# First (and only) environment in this account creates the GitHub OIDC provider.
-create_github_oidc_provider = true

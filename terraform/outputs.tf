@@ -44,11 +44,6 @@ output "route53_zone_id" {
   value = data.aws_route53_zone.main.zone_id
 }
 
-# Set these as repository/environment variables in GitHub Actions.
-output "github_role_arns" {
-  value = module.github_oidc.role_arns
-}
-
 output "workload_role_arns" {
   value = { for name, identity in module.workload_identity : name => identity.role_arn }
 }

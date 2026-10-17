@@ -1,0 +1,29 @@
+# Checkov (CI, terraform/). Every skip is a recorded decision for this
+# disposable PoC, not an oversight; anything new still fails the build.
+# Production hardening for most of these is in docs/architecture.md.
+framework:
+  - terraform
+compact: true
+quiet: true
+skip-check:
+  # EKS API endpoint open to 0.0.0.0/0 so GitHub-hosted runners can reach it;
+  # access still needs an IAM principal with an access entry (dev.tfvars).
+  - CKV_AWS_38
+  - CKV_AWS_39
+  # EKS envelope-encrypts Kubernetes secrets by default (AWS-owned key); a
+  # customer-managed KMS key is production hardening.
+  - CKV_AWS_58
+  # Control-plane logs: only the types the PoC needs, kept 7 days, default
+  # encryption. A year of KMS-encrypted logs costs more than the environment.
+  - CKV_AWS_37
+  - CKV_AWS_338
+  - CKV_AWS_158
+  # The app secret uses the AWS-managed Secrets Manager key, and rotation is
+  # done by hand in Secrets Manager (CLAUDE.md), never through Terraform.
+  - CKV_AWS_149
+  - CKV2_AWS_57
+  # cluster-autoscaler's Describe* calls don't support resource-level
+  # permissions; its mutating calls are scoped by tag condition.
+  - CKV_AWS_356
+  # No VPC flow logs in the PoC (cost); production hardening.
+  - CKV2_AWS_11

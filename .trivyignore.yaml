@@ -1,0 +1,12 @@
+# Trivy (CI). Each exception is scoped to a path and says why; anything new
+# still fails the build.
+misconfigurations:
+  - id: AVD-AWS-0040
+    paths: ["terraform/modules/eks/main.tf"]
+    statement: Public endpoint open so GitHub-hosted runners reach the API; access needs an IAM access entry. Same decision as Checkov CKV_AWS_38/39.
+  - id: AVD-AWS-0039
+    paths: ["terraform/modules/eks/main.tf"]
+    statement: EKS envelope-encrypts secrets by default with an AWS-owned key; a customer-managed KMS key is production hardening.
+  - id: KSV014
+    paths: ["gitops/workloads/dev/payment-api/postgres.yaml"]
+    statement: Postgres writes to its root filesystem (/var/run/postgresql, /tmp). Follow-up - mount emptyDirs there and set readOnlyRootFilesystem, tested on a live cluster.

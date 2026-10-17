@@ -32,10 +32,10 @@ The environment is disposable: created and verified with
 
 | Layer | Owner | Contents |
 |---|---|---|
-| Cloud substrate | Terraform (`terraform/`) | VPC, EKS, IAM, GitHub OIDC, Pod Identity, Secrets Manager entries |
+| Cloud substrate | Terraform (`terraform/`) | VPC, EKS, IAM, Pod Identity, Secrets Manager entries |
 | GitOps bootstrap | Terraform `argocd` module | Argo CD and one root Application, nothing more |
 | Everything in the cluster | Argo CD (`gitops/`) | Platform controllers, config, workloads |
-| Out-of-band, outlives environments | Scripts (`scripts/`) | Terraform state bucket, ECR repositories, audit bucket, GitHub App credentials |
+| Out-of-band, outlives environments | Scripts (`scripts/`) | Terraform state bucket, ECR repositories, audit bucket, GitHub OIDC provider and CI roles, GitHub App credentials |
 
 Nothing in the cluster is changed by hand or by Terraform after bootstrap; a
 change is a commit.
@@ -64,7 +64,7 @@ Private subnets ──> S3 gateway endpoint (no NAT charge)
 | Who | How it authenticates | What it may do |
 |---|---|---|
 | Humans | AWS SSO → EKS access entry | Cluster admin (dev) |
-| GitHub Actions | OIDC → STS, per-duty roles | `terraform-deployer` (env-gated), `terraform-plan`, `image-builder` |
+| GitHub Actions | OIDC → STS; each role trusts one workflow file on one ref | `terraform-deployer` (`environment.yml`, owner-only), `terraform-plan` (`ci.yml` on PRs), `image-builder` (`images.yml` on main) |
 | Workloads | EKS Pod Identity, one role per ServiceAccount | Only their own AWS API calls |
 | Argo CD → GitHub | Read-only GitHub App, hourly tokens | Read this repo |
 | MCP server → GitHub | Separate GitHub App | Read repo, open PRs from `agent/*` branches |
@@ -168,6 +168,24 @@ and logs every decision.
 - Its own permissions: read-only RBAC without Secrets, no AWS role, and the
   GitHub App above.
 
+## CI/CD
+
+GitHub Actions authenticates to AWS only through OIDC; no static key is
+stored anywhere. The provider and roles are created by
+`scripts/bootstrap-ci.sh`, outside Terraform, so CI works while the
+environment is down.
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | Every PR (the agent's included) | Go fmt/vet/test, Terraform fmt/validate/TFLint, Trivy, Checkov, Conftest, promtool, actionlint, shellcheck; owner-only `terraform plan` (+ Infracost) when `terraform/` changed |
+| `images.yml` | Merge to `main` changing `apps/` | Build → Trivy scan → push to ECR → open a PR pinning the new tags |
+| `environment.yml` | Manual, owner-only | `create-env.sh` (up) or `destroy-env.sh` (down) |
+
+The delivery path for code is: PR → CI → human merge → image built,
+scanned, pushed → pin PR → CI → human merge → Argo CD deploys. A human
+merge gates both steps, and nothing in CI touches the cluster or pushes to
+`main`.
+
 ### Known gap: no branch protection
 
 The repository is private on GitHub Free, which offers no branch protection
@@ -181,6 +199,11 @@ or rulesets for private repositories. Consequences:
   pod would not be stopped by GitHub.
 - "CI passes and a human approves before merge" is a working agreement, not
   something GitHub enforces.
+- GitHub Environments with required reviewers aren't available either, so
+  privileged CI jobs (plan, image push, environment up/down) are gated by
+  `scripts/ci/require-owner.sh`: they stop unless the repository owner
+  caused the run. Anyone with write access could edit a workflow to drop
+  the check; here only the owner has write access.
 
 Closing it needs branch protection on `main`: a public repository, or GitHub
 Pro. With it, require a pull request with one approval and passing status

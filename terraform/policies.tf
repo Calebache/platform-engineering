@@ -6,40 +6,6 @@ data "aws_route53_zone" "main" {
   private_zone = false
 }
 
-# --- GitHub Actions -------------------------------------------------------
-
-# Plan takes the state lock, which means writing/deleting the .tflock object.
-data "aws_iam_policy_document" "plan_state_lock" {
-  statement {
-    sid       = "StateLock"
-    actions   = ["s3:PutObject", "s3:DeleteObject"]
-    resources = ["arn:aws:s3:::${var.state_bucket_name}/*.tflock"]
-  }
-}
-
-data "aws_iam_policy_document" "image_builder" {
-  statement {
-    sid       = "EcrLogin"
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-
-  statement {
-    sid = "PushToPlatformRepos"
-    actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:BatchGetImage",
-      "ecr:CompleteLayerUpload",
-      "ecr:DescribeImageScanFindings",
-      "ecr:DescribeImages",
-      "ecr:InitiateLayerUpload",
-      "ecr:PutImage",
-      "ecr:UploadLayerPart",
-    ]
-    resources = [for r in data.aws_ecr_repository.app : r.arn]
-  }
-}
-
 # --- sre-agent ------------------------------------------------------------
 
 locals {

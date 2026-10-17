@@ -21,3 +21,4 @@ apps/*/mcp-server
 apps/*/payment-api
 apps/*/sre-agent
 *.test
+.rules.*/

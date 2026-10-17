@@ -1,0 +1,138 @@
+# Builds, scans and pushes app images (doc.md §6), then opens a PR that pins
+# the new tags in gitops/. Merging that PR is the deployment approval; Argo CD
+# deploys it. Nothing here touches the cluster or main directly.
+#
+# Runs on merges to main that change apps/, or by hand for one app (or all).
+# Owner-only: the job that holds AWS credentials stops unless the repository
+# owner caused the run (scripts/ci/require-owner.sh).
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/**"]
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App to build
+        type: choice
+        options: [all, mcp-server, sre-agent, payment-api]
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ca-central-1
+  AWS_ACCOUNT_ID: "103544553431"
+  TRIVY_IMAGE: aquasec/trivy@sha256:665030f4d33a82c1e8d9d5e0453365842236723c1ee5cc3becca698268e66a56 # 0.58.2
+
+jobs:
+  detect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.apps.outputs.apps }}
+      tag: ${{ steps.apps.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: owner only
+        run: scripts/ci/require-owner.sh
+      - name: which apps changed
+        id: apps
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_APP: ${{ inputs.app }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          all=(mcp-server sre-agent payment-api)
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            if [[ "$INPUT_APP" == all ]]; then apps=("${all[@]}"); else apps=("$INPUT_APP"); fi
+          elif [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            apps=("${all[@]}")
+          else
+            mapfile -t apps < <(git diff --name-only "$BEFORE" "$GITHUB_SHA" -- apps/ | cut -d/ -f2 | sort -u)
+          fi
+          json="$(printf '%s\n' "${apps[@]}" | jq -Rnc '[inputs | select(length > 0)]')"
+          echo "apps=$json" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "Building: $json at ${GITHUB_SHA::12}"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.apps != '[]'
+    name: build (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.detect.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: owner only
+        run: scripts/ci/require-owner.sh
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/agentic-sre-dev-image-builder-role
+          aws-region: ${{ env.AWS_REGION }}
+      # Build locally, scan (fixable HIGH/CRITICAL fail), then push: an
+      # immutable tag can't be taken back once pushed.
+      - name: build, scan, push
+        env:
+          APP: ${{ matrix.app }}
+          REQUIRE_SCAN: "true"
+          TRIVY: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${{ env.TRIVY_IMAGE }}
+        run: |
+          image="$(scripts/build-push.sh "$APP" | tail -1)"
+          echo "Pushed \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+
+  pin:
+    needs: [detect, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the pin branch
+      pull-requests: write # open the pin PR
+      actions: write # dispatch ci.yml on it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: owner only
+        run: scripts/ci/require-owner.sh
+      - name: open the pin PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPS_JSON: ${{ needs.detect.outputs.apps }}
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          branch="ci/pin-images-$TAG"
+          git switch -c "$branch"
+          mapfile -t apps < <(jq -r '.[]' <<<"$APPS_JSON")
+          for app in "${apps[@]}"; do scripts/pin-image.sh "$app" "$TAG"; done
+          if git diff --quiet; then
+            echo "Manifests already pin $TAG; no PR needed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Deploy ${apps[*]} $TAG"
+          git push --force-with-lease origin "$branch"
+          body="Pins ${apps[*]} to \`$TAG\`, built from $GITHUB_SHA and scanned by Trivy before the push.
+
+          Merging deploys it: Argo CD syncs \`gitops/workloads/dev\`."
+          url="$(gh pr create --base main --head "$branch" --title "Deploy ${apps[*]} $TAG" --body "$body")"
+          # PRs opened with GITHUB_TOKEN don't trigger workflows; run CI on the
+          # branch explicitly so the checks show on the PR.
+          gh workflow run ci.yml --ref "$branch"
+          echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"

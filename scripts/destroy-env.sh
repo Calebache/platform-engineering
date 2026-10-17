@@ -17,8 +17,8 @@
 #   4. Delete the root Application itself and wait for it.
 #   5. terraform destroy: Argo CD, EKS, the network, IAM.
 #
-# What survives (by design): the Terraform state bucket, ECR images and the
-# audit bucket (scripts/bootstrap-*.sh), and the GitHub App secrets.
+# What survives (by design): the Terraform state bucket, ECR images, the CI
+# roles and the audit bucket (scripts/bootstrap-*.sh), and the GitHub App secrets.
 #
 # Usage:
 #   scripts/destroy-env.sh dev [extra terraform destroy args, e.g. -auto-approve]
@@ -130,11 +130,11 @@ fi
 cd "$REPO_ROOT/terraform"
 terraform init -backend-config="environments/${ENVIRONMENT}.s3.tfbackend" -reconfigure -input=false >/dev/null
 
-# ECR repositories and the audit bucket must survive. Terraform stops
-# managing them through `removed` blocks, but those only take effect on an
-# apply; until one has run they're still in state, and destroy would delete
-# them. Forget them explicitly (this deletes nothing in AWS).
-legacy="$(terraform state list 2>/dev/null | grep -E '^module\.(ecr|audit_bucket)\.' || true)"
+# ECR repositories, the audit bucket and the CI roles must survive. Terraform
+# stops managing them through `removed` blocks, but those only take effect on
+# an apply; until one has run they're still in state, and destroy would
+# delete them. Forget them explicitly (this deletes nothing in AWS).
+legacy="$(terraform state list 2>/dev/null | grep -E '^module\.(ecr|audit_bucket|github_oidc)\.' || true)"
 if [[ -n "$legacy" ]]; then
   log "Forgetting long-lived artifacts still in state (not deleting them):"
   echo "$legacy" | sed 's/^/      /'
@@ -142,12 +142,12 @@ if [[ -n "$legacy" ]]; then
   terraform state rm $legacy >/dev/null
 fi
 
-# Refuse to continue if the destroy would touch any repository or bucket.
+# Refuse to continue if the destroy would touch anything long-lived.
 if terraform plan -destroy -var-file="$TFVARS" -input=false -no-color 2>/dev/null \
-    | grep -E '# .*(aws_ecr_repository|aws_s3_bucket)\..* will be destroyed'; then
-  die "the destroy plan includes ECR repositories or S3 buckets; refusing (they must outlive the environment)"
+    | grep -E '# .*(aws_ecr_repository|aws_s3_bucket|aws_iam_openid_connect_provider)\..* will be destroyed'; then
+  die "the destroy plan includes ECR repositories, S3 buckets or the GitHub OIDC provider; refusing (they must outlive the environment)"
 fi
 
 log "Running terraform destroy for $ENVIRONMENT"
 terraform destroy -var-file="$TFVARS" "$@"
-log "Environment $ENVIRONMENT destroyed. Kept: state bucket, ECR images, audit records, GitHub App secrets."
+log "Environment $ENVIRONMENT destroyed. Kept: state bucket, ECR images, audit records, GitHub App secrets, CI roles."

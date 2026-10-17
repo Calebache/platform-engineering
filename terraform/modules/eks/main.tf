@@ -39,11 +39,13 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.endpoint_public_access_cidrs
   }
 
-  # Access entries only (no aws-auth ConfigMap). Whoever runs the first
-  # apply becomes cluster admin; CI and extra admins come from var.cluster_admins.
+  # Access entries only (no aws-auth ConfigMap). Every admin, CI's deployer
+  # role included, comes from var.cluster_admins; whoever runs the apply gets
+  # nothing implicit. (An implicit creator entry would collide with the
+  # deployer's explicit one whenever CI creates the cluster.)
   access_config {
     authentication_mode                         = "API"
-    bootstrap_cluster_creator_admin_permissions = true
+    bootstrap_cluster_creator_admin_permissions = false
   }
 
   # Avoid extended-support pricing if the version ages out.

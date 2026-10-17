@@ -1,0 +1,25 @@
+# Intentional failure demo (doc.md §21): this manifest must fail the OPA
+# check. It lives outside gitops/, so nothing ever deploys it.
+#
+#   conftest test --policy policy/kubernetes policy/examples/privileged-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-demo
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: shell
+      image: busybox:1.37.0
+      command: ["sleep", "3600"]
+      securityContext:
+        privileged: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          memory: 16Mi
+        limits:
+          memory: 32Mi

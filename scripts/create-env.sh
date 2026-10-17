@@ -52,7 +52,11 @@ for secret in "agentic-sre/argocd/github-app" "${PROJECT}-${ENVIRONMENT}/mcp-ser
   aws secretsmanager describe-secret --region "$REGION" --secret-id "$secret" >/dev/null 2>&1 \
     || die "secret $secret is missing; create it with scripts/store-github-app.sh (see its header)"
 done
-log "Preflight: Terraform $tf_version, account $ACCOUNT_ID, GitHub App secrets present"
+# The cluster's admin access entry names CI's deployer role, so it must exist.
+deployer="${PROJECT}-${ENVIRONMENT}-terraform-deployer-role"
+aws iam get-role --role-name "$deployer" >/dev/null 2>&1 \
+  || die "IAM role $deployer is missing; create the CI roles with scripts/bootstrap-ci.sh"
+log "Preflight: Terraform $tf_version, account $ACCOUNT_ID, GitHub App secrets and CI roles present"
 
 # Every image the manifests pin must exist, or workloads come up in
 # ImagePullBackOff. (ECR outlives environments, so normally they do.)
@@ -102,7 +106,8 @@ for a in sorted(items, key=lambda a: a["metadata"]["name"]):
 '
 }
 
-expected_apps="$(ls "$REPO_ROOT/gitops/apps/$ENVIRONMENT" | grep -c '\.yaml$')" # includes project + repo secret
+app_files=("$REPO_ROOT/gitops/apps/$ENVIRONMENT"/*.yaml)
+expected_apps="${#app_files[@]}" # includes project + repo secret
 log "Waiting for every Argo CD Application to be Synced/Healthy (up to $((READY_TIMEOUT_SECONDS / 60)) min)"
 deadline=$((SECONDS + READY_TIMEOUT_SECONDS)); last=""
 while :; do

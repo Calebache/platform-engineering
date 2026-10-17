@@ -1,0 +1,84 @@
+# Brings the environment up or tears it down (doc.md §20.20), by running the
+# same scripts you run by hand: scripts/create-env.sh and
+# scripts/destroy-env.sh. Manual only, from main, and owner-only: the job
+# holds the admin deployer role, so it stops unless the repository owner
+# dispatched it (scripts/ci/require-owner.sh). Tearing down also needs the
+# environment's name typed into `confirm`.
+name: environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: up (create-env.sh) or down (destroy-env.sh)
+        type: choice
+        options: [up, down]
+      environment:
+        type: choice
+        options: [dev]
+        default: dev
+      confirm:
+        description: For down, type the environment name
+        type: string
+        default: ""
+      skip_model_check:
+        description: Skip whoami's (billed) Bedrock call after up
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One lifecycle operation per environment at a time (Terraform also locks).
+concurrency:
+  group: environment-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ca-central-1
+  AWS_ACCOUNT_ID: "103544553431"
+  TERRAFORM_VERSION: 1.16.6
+
+jobs:
+  lifecycle:
+    name: ${{ inputs.action }} ${{ inputs.environment }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: owner only
+        run: scripts/ci/require-owner.sh
+      - name: confirm teardown
+        if: inputs.action == 'down'
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          [[ "$CONFIRM" == "$ENVIRONMENT" ]] || { echo "::error::type '$ENVIRONMENT' into confirm to tear it down"; exit 1; }
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/agentic-sre-${{ inputs.environment }}-terraform-deployer-role
+          aws-region: ${{ env.AWS_REGION }}
+          # create-env.sh waits for the whole platform; destroy-env.sh for every wave.
+          role-duration-seconds: 10800
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: create-env.sh
+        if: inputs.action == 'up'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SKIP_MODEL_CHECK: ${{ inputs.skip_model_check }}
+        run: scripts/create-env.sh "$ENVIRONMENT" -auto-approve
+      - name: destroy-env.sh
+        if: inputs.action == 'down'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: scripts/destroy-env.sh "$ENVIRONMENT" -auto-approve

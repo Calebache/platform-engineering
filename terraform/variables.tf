@@ -24,14 +24,9 @@ variable "account_id" {
 }
 
 variable "github_repo" {
-  description = "GitHub repository (owner/name) trusted by the OIDC roles."
+  description = "GitHub repository (owner/name) Argo CD syncs from."
   type        = string
   default     = "Calebache/platform-engineering"
-}
-
-variable "state_bucket_name" {
-  description = "Terraform state bucket created by scripts/bootstrap-state-bucket.sh. The plan role needs it for the state lock."
-  type        = string
 }
 
 variable "bedrock_region" {
@@ -159,12 +154,4 @@ variable "argocd_repo_secret_revision" {
 variable "gitops_target_revision" {
   description = "Branch the root Application tracks; it syncs gitops/apps/<environment>."
   type        = string
-}
-
-# --- GitHub OIDC ----------------------------------------------------------
-
-variable "create_github_oidc_provider" {
-  description = "Only one GitHub OIDC provider can exist per account; set false for every environment after the first."
-  type        = bool
-  default     = true
 }

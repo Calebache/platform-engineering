@@ -1,0 +1,206 @@
+# Pull request validation (doc.md §7). Deterministic checks that every change
+# passes, whoever wrote it: a human, or the SRE agent's PR. Read-only jobs run
+# for every PR; the one job holding AWS credentials (terraform plan) runs only
+# for the owner's PRs, and only when terraform/ changed.
+#
+# workflow_dispatch exists for PRs that GitHub won't trigger CI on by itself:
+# images.yml opens its pin PRs with GITHUB_TOKEN, then dispatches this
+# workflow on the PR's branch so the checks still show on the PR.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ca-central-1
+  AWS_ACCOUNT_ID: "103544553431"
+  CONFTEST_IMAGE: openpolicyagent/conftest@sha256:9204b38318a7b4be4e49403d81a6c53ed81a99d0c3dd770a216a65edb9a412c7 # v0.56.0
+  TRIVY_IMAGE: aquasec/trivy@sha256:665030f4d33a82c1e8d9d5e0453365842236723c1ee5cc3becca698268e66a56 # 0.58.2
+  CHECKOV_IMAGE: bridgecrew/checkov@sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e # 3.2.334
+  PROMETHEUS_IMAGE: prom/prometheus@sha256:6927e0919a144aa7616fd0137d4816816d42f6b816de3af269ab065250859a62 # v3.2.1
+  ACTIONLINT_IMAGE: rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 # 1.7.7
+  SHELLCHECK_IMAGE: koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb # v0.10.0
+  INFRACOST_IMAGE: infracost/infracost@sha256:b8fe5f572c55993eca069395e1a9a4036f2d29bdceed2e010a641c1300658cb8 # ci-0.10
+  TERRAFORM_VERSION: 1.16.6
+  TFLINT_VERSION: v0.64.0
+
+jobs:
+  go:
+    name: go (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [mcp-server, sre-agent, payment-api]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: apps/${{ matrix.app }}/go.mod
+          cache-dependency-path: apps/${{ matrix.app }}/go.sum
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          [[ -z "$unformatted" ]] || { echo "::error::not gofmt-formatted:"; echo "$unformatted"; exit 1; }
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -recursive -check -diff terraform/
+      - name: terraform validate
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+      - name: tflint
+        working-directory: terraform
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin download rate limit
+        run: |
+          tflint --init --config "$PWD/.tflint.hcl"
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Exceptions live in .trivyignore.yaml and .checkov.yaml, each with its reason.
+      - name: trivy (misconfiguration)
+        run: >-
+          docker run --rm -v "$PWD:/src" -w /src "$TRIVY_IMAGE"
+          config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore.yaml
+          --skip-dirs policy/examples .
+      - name: trivy (Go dependencies)
+        run: >-
+          docker run --rm -v "$PWD:/src" -w /src "$TRIVY_IMAGE"
+          fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 apps
+      - name: checkov
+        run: docker run --rm -v "$PWD:/src" -w /src "$CHECKOV_IMAGE" --config-file .checkov.yaml -d terraform
+
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: conftest verify (the policy's own tests)
+        run: docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" verify --policy policy/kubernetes
+      - name: conftest test (every manifest in gitops/)
+        run: |
+          mapfile -t files < <(git ls-files 'gitops/*.yaml')
+          docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" test --policy policy/kubernetes "${files[@]}"
+      # The intentional-failure demo must keep failing; if it passes, the
+      # policy stopped enforcing.
+      - name: privileged manifest is rejected
+        run: |
+          if docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" test --policy policy/kubernetes policy/examples/privileged-pod.yaml; then
+            echo "::error::policy/examples/privileged-pod.yaml passed the policy; it must be denied"
+            exit 1
+          fi
+      - name: promtool check rules
+        env:
+          PROMTOOL: docker run --rm -v ${{ github.workspace }}:/w -w /w --entrypoint promtool ${{ env.PROMETHEUS_IMAGE }}
+        run: scripts/ci/check-prometheus-rules.sh
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+      - name: shellcheck
+        run: docker run --rm -v "$PWD:/mnt" -w /mnt "$SHELLCHECK_IMAGE" --severity=warning scripts/*.sh scripts/ci/*.sh
+
+  # terraform plan against the real state. -refresh=false: the plan role has
+  # no Kubernetes access, so it plans config against recorded state and
+  # doesn't detect drift (create-env.sh's apply does).
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: [terraform]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Optional: set the repository secret to add a cost estimate.
+      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: terraform/ changed?
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE" HEAD -- terraform/; then
+            echo "terraform=false" >> "$GITHUB_OUTPUT"; echo "No change under terraform/; skipping plan."
+          else
+            echo "terraform=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: owner only
+        if: steps.changed.outputs.terraform == 'true'
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: scripts/ci/require-owner.sh
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.changed.outputs.terraform == 'true'
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/agentic-sre-dev-terraform-plan-role
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: steps.changed.outputs.terraform == 'true'
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: terraform plan
+        if: steps.changed.outputs.terraform == 'true'
+        working-directory: terraform
+        run: |
+          terraform init -input=false -backend-config=environments/dev.s3.tfbackend
+          terraform plan -input=false -lock-timeout=5m -refresh=false -no-color \
+            -var-file=environments/dev.tfvars -out=plan.tfplan | tee plan.txt
+          {
+            echo '### terraform plan (dev)'
+            echo '```'
+            grep -E '^(Plan:|No changes|Changes to Outputs)' plan.txt || true
+            echo '```'
+            echo '<details><summary>Full plan</summary>'; echo; echo '```'
+            tail -c 60000 plan.txt
+            echo '```'; echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: infracost
+        if: steps.changed.outputs.terraform == 'true' && env.INFRACOST_API_KEY != ''
+        run: |
+          terraform -chdir=terraform show -json plan.tfplan > terraform/plan.json
+          docker run --rm -e INFRACOST_API_KEY -v "$PWD:/src" -w /src "$INFRACOST_IMAGE" \
+            breakdown --path terraform/plan.json --format table --no-color > cost.txt
+          { echo '### infracost (dev, monthly)'; echo '```'; cat cost.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

@@ -31,7 +31,7 @@ module "eks" {
   node_max_pods       = var.node_max_pods
 
   cluster_admins = merge(
-    { "terraform-deployer" = module.github_oidc.role_arns["terraform-deployer-role"] },
+    { "terraform-deployer" = "arn:aws:iam::${var.account_id}:role/${local.name}-terraform-deployer-role" },
     { for idx, arn in var.cluster_admin_principal_arns : "extra-${idx}" => arn },
   )
 }
@@ -68,36 +68,13 @@ removed {
   }
 }
 
-module "github_oidc" {
-  source = "./modules/github-oidc"
-
-  name_prefix          = local.name
-  create_oidc_provider = var.create_github_oidc_provider
-
-  roles = {
-    # `terraform apply`: only jobs bound to the GitHub Environment, which is
-    # where the human approval gate lives (configure required reviewers there).
-    #
-    # Deliberate exception to least privilege: this role creates IAM, EKS and
-    # VPC resources, so it is effectively admin. It is contained by the trust
-    # policy and never usable by workloads. Tightening it is follow-up work.
-    "terraform-deployer-role" = {
-      subject             = "repo:${var.github_repo}:environment:${var.environment}"
-      managed_policy_arns = ["arn:aws:iam::aws:policy/AdministratorAccess"]
-    }
-
-    # `terraform plan` on pull requests.
-    "terraform-plan-role" = {
-      subject             = "repo:${var.github_repo}:pull_request"
-      managed_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
-      inline_policies     = { "state-lock" = data.aws_iam_policy_document.plan_state_lock.json }
-    }
-
-    # Image pushes happen only from main.
-    "image-builder-role" = {
-      subject         = "repo:${var.github_repo}:ref:refs/heads/main"
-      inline_policies = { "ecr-push" = data.aws_iam_policy_document.image_builder.json }
-    }
+# GitHub Actions' OIDC provider and CI roles live outside Terraform
+# (scripts/bootstrap-ci.sh): CI must authenticate while the environment is
+# down, and the deployer role can't be created by the apply it runs.
+removed {
+  from = module.github_oidc
+  lifecycle {
+    destroy = false
   }
 }
 
