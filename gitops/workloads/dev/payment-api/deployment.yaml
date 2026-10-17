@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: payment-api
+  labels:
+    app.kubernetes.io/name: payment-api
+    app.kubernetes.io/part-of: payment-api
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-api
+        app.kubernetes.io/part-of: payment-api
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: payment-api
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:66b2f83008a0
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            # The demo's failure point: change this to a wrong host in a
+            # commit and every database request returns HTTP 500.
+            - name: DATABASE_HOST
+              value: postgres.payment-api.svc.cluster.local
+            - name: DATABASE_PORT
+              value: "5432"
+            - name: DATABASE_NAME
+              value: payments
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef: { name: payment-api-db, key: username }
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: payment-api-db, key: password }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }

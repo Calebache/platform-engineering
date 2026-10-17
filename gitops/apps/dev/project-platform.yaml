@@ -25,6 +25,7 @@ spec:
     - https://kubernetes-sigs.github.io/external-dns
     - docker.io/envoyproxy
     - https://prometheus-community.github.io/helm-charts
+    - https://charts.external-secrets.io
   destinations:
     - server: https://kubernetes.default.svc
       namespace: "*"

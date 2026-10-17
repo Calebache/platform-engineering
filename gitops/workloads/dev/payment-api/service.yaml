@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  namespace: payment-api
+  labels:
+    app.kubernetes.io/name: payment-api
+spec:
+  selector:
+    app.kubernetes.io/name: payment-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    # Scraped by Prometheus only; the HTTPRoute targets port 80, so metrics
+    # are never reachable from the internet.
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: payment-api
+  namespace: payment-api
+spec:
+  parentRefs:
+    - name: public
+      namespace: envoy-gateway-system
+      sectionName: https
+  # external-dns publishes this name pointing at the Gateway's NLB.
+  hostnames:
+    - payments.calebache.com
+  rules:
+    - backendRefs:
+        - name: payment-api
+          port: 80

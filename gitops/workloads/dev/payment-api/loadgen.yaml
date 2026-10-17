@@ -1,0 +1,39 @@
+# Steady synthetic traffic (about 4 requests/second) through the public
+# Gateway, so the error-rate alert always has requests to measure. Same image
+# as the API, different mode.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-loadgen
+  namespace: payment-api
+  labels:
+    app.kubernetes.io/name: payment-loadgen
+    app.kubernetes.io/part-of: payment-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-loadgen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-loadgen
+        app.kubernetes.io/part-of: payment-api
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadgen
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:66b2f83008a0
+          args: ["loadgen", "-target", "https://payments.calebache.com", "-interval", "500ms"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

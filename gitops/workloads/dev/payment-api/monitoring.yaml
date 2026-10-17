@@ -1,0 +1,47 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: payment-api
+  namespace: payment-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-api
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+# The alert that starts the incident workflow (doc.md §11, §13).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: payment-api
+  namespace: payment-api
+spec:
+  groups:
+    - name: payment-api
+      rules:
+        - alert: PaymentApiHighErrorRate
+          # Share of API requests (health probes excluded) answered with 5xx.
+          expr: |
+            sum(rate(http_requests_total{namespace="payment-api", service="payment-api", code=~"5..", route!~"GET /(healthz|readyz)"}[2m]))
+              /
+            sum(rate(http_requests_total{namespace="payment-api", service="payment-api", route!~"GET /(healthz|readyz)"}[2m]))
+              > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            service: payment-api
+          annotations:
+            summary: payment-api is failing more than 5% of requests
+            description: >-
+              {{ $value | humanizePercentage }} of payment-api requests returned
+              HTTP 5xx over the last 2 minutes.
+        - alert: PaymentApiDown
+          expr: absent(up{namespace="payment-api", service="payment-api"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+            service: payment-api
+          annotations:
+            summary: No payment-api instance is being scraped successfully

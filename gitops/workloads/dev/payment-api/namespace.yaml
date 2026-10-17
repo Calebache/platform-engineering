@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payment-api
+  labels:
+    # Opt in to the public Gateway's HTTPS listener (deny by default).
+    gateway.calebache.com/public: "true"
+    # Kubernetes Pod Security "restricted": non-root, no privilege
+    # escalation, all capabilities dropped, seccomp on. Pods that don't
+    # comply are rejected at admission.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

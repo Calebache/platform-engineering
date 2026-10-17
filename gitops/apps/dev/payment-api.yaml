@@ -1,0 +1,25 @@
+# The demo workload: payment-api, its Postgres, a load generator, the public
+# route and its alerts. The deliberate failure (a wrong DATABASE_HOST) is a
+# commit to gitops/workloads/dev/payment-api/deployment.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-api
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/Calebache/platform-engineering.git
+    targetRevision: main
+    path: gitops/workloads/dev/payment-api
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment-api
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
