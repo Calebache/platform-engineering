@@ -1,0 +1,27 @@
+# Synced by the root Application (created by Terraform) from gitops/apps/dev.
+# Every child Application added here should:
+#   - use project: platform
+#   - set an argocd.argoproj.io/sync-wave (see CLAUDE.md for the wave order)
+#   - carry the resources-finalizer.argocd.argoproj.io finalizer, so that
+#     `terraform destroy` deleting the root app cascades all the way down
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Platform components and workloads for the agentic SRE PoC.
+  # Add upstream Helm chart repos (ingress-nginx, cert-manager, ...) as their
+  # Applications are introduced.
+  sourceRepos:
+    - https://github.com/Calebache/platform-engineering.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"

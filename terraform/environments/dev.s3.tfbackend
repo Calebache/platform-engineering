@@ -1,0 +1,5 @@
+bucket       = "calebache-platform-tfstate-103544553431"
+key          = "agentic-sre/dev/terraform.tfstate"
+region       = "ca-central-1"
+encrypt      = true
+use_lockfile = true

@@ -1,0 +1,17 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.DS_Store
+
+# Credentials must never be committed (GitHub App keys live in Secrets Manager).
+*.pem
+*.key
+.env
+.env.*
