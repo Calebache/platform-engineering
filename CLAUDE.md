@@ -34,6 +34,14 @@ Sync waves (child Application health is enabled through a Lua check in the `argo
 
 External Secrets (wave -1) is **the only way workloads get secrets**. Terraform's `app-secret` module generates a credential as an ephemeral value and writes it to Secrets Manager under `agentic-sre-dev/...` with a write-only attribute, so it never touches Git or state. The `aws-secrets-manager` ClusterSecretStore reads it with the controller's Pod Identity, which IAM limits to the `agentic-sre-dev/` prefix. An `ExternalSecret` in the workload's namespace creates the Kubernetes Secret. The store only serves namespaces listed in its `conditions`, so add a namespace there before its first ExternalSecret. The webhook and cert-controller are off. Secrets use `recovery_window_in_days = 0`, so recreated environments can reuse the names.
 
+Secrets Manager is the source of truth. Never edit the synced Kubernetes Secret, because External Secrets reverts it. Rotating the payment-api DB password changes only the stored value: Postgres applies `POSTGRES_PASSWORD` once, at first init, and both pods read env vars at start. Rotate in this order:
+1. Bump `rotation_version` in `module "payment_api_db_secret"` and apply.
+2. Force a sync: `kubectl -n payment-api annotate externalsecret payment-api-db force-sync=$(date +%s) --overwrite`.
+3. Set the new password inside Postgres: `kubectl -n payment-api exec -it postgres-0 -- psql -U payments -d payments -c "\password payments"`.
+4. Run `kubectl -n payment-api rollout restart deployment/payment-api`.
+
+If you restart the app before step 3, every query fails authentication. Those 500s look exactly like the demo incident.
+
 **payment-api** (`apps/payment-api`, `gitops/workloads/dev/payment-api`) is the demo workload:
 - **API.** `POST /v1/payments` `{amount_cents, currency}` and `GET /v1/payments/{id}`. Postgres runs in the same namespace on emptyDir storage.
 - **Metrics.** `http_requests_total{route,method,code}` and `payment_database_errors_total`, on port 9090. That port isn't routed publicly.

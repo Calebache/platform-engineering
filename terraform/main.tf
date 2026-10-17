@@ -180,4 +180,8 @@ module "payment_api_db_secret" {
   name        = "${local.name}/payment-api/db"
   description = "payment-api Postgres credentials"
   username    = "payments"
+
+  # Increment and apply to generate a new password. Postgres keeps the old
+  # one until it's changed inside the database; see CLAUDE.md for the order.
+  rotation_version = 1
 }
