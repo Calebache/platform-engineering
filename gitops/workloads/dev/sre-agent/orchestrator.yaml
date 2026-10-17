@@ -24,7 +24,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: orchestrator
-          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:03aa5283ec7f
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:34720c943dbb
           args: ["orchestrator"]
           ports:
             - name: http
@@ -38,7 +38,7 @@ spec:
             # Incident Jobs run this same image (the admission policy only
             # allows the agent's own ECR repository).
             - name: AGENT_IMAGE
-              value: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:03aa5283ec7f
+              value: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:34720c943dbb
             - name: ALLOWED_SERVICES
               value: payment-api
             - name: INCIDENT_COOLDOWN
@@ -46,10 +46,12 @@ spec:
             - name: INCIDENT_DEADLINE_SECONDS
               value: "3600"
             # Passed through to each incident Job verbatim.
+            # Claude Opus 4.6 through bedrock-runtime and its global inference
+            # profile (Terraform: bedrock_region / bedrock_inference_profile).
             - name: WORKER_BEDROCK_REGION
-              value: us-east-1
+              value: ca-central-1
             - name: WORKER_MODEL_ID
-              value: anthropic.claude-opus-5-5
+              value: global.anthropic.claude-opus-4-6-v1
             - name: WORKER_AWS_REGION
               value: ca-central-1
             - name: WORKER_AUDIT_BUCKET

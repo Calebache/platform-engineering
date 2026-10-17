@@ -24,7 +24,7 @@ spec:
 #   - DNS
 #   - the MCP server (their only window into the platform)
 #   - the EKS Pod Identity agent (link-local, for AWS credentials)
-#   - HTTPS outside the VPC: Bedrock (us-east-1) and S3 via the NAT gateway
+#   - HTTPS outside the VPC: Bedrock (bedrock-runtime) and S3 via the NAT gateway
 #     / S3 endpoint. NetworkPolicy can't filter by hostname; see
 #     docs/production-agent-topology.md for VPC endpoints and egress proxies.
 apiVersion: networking.k8s.io/v1

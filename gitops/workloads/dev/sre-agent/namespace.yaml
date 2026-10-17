@@ -2,8 +2,9 @@
 #
 #   sre-agent               the incident worker. The only identity the MCP
 #                           server's policy accepts, and bound by Terraform
-#                           (Pod Identity) to a role allowing Bedrock in
-#                           us-east-1 and PutObject on audit/*. No Kubernetes RBAC.
+#                           (Pod Identity) to a role allowing one Bedrock
+#                           model (Opus 4.6) and PutObject on audit/*. No
+#                           Kubernetes RBAC.
 #   sre-agent-orchestrator  receives webhooks and creates incident Jobs. No
 #                           AWS role, no model access, no MCP access.
 apiVersion: v1
