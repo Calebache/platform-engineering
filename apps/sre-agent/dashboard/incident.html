@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{template "head"}}
+<title>{{.I.ExecutionID}} · SRE Agent Activity</title>
+</head>
+<body>
+<main class="wrap">
+  {{$i := .I}}
+  <header class="top">
+    <div style="display:grid;gap:6px">
+      <a href="/">← All incidents</a>
+      <h1>{{$i.Service}} · {{$i.Alert}}</h1>
+    </div>
+    <div class="meta">{{template "pill" $i}}<span class="num">{{$i.Started}}{{with $i.Duration}} · {{.}}{{end}}</span><span class="mono">{{$i.ExecutionID}}</span></div>
+  </header>
+
+  {{with .Err}}<div class="banner">{{.}}</div>{{end}}
+  {{with $i.Error}}<div class="banner">Stopped with an error: {{.}}</div>{{end}}
+
+  {{with $i.Next}}
+  <section>
+    <h2>Recommended next step</h2>
+    <div class="card next lead">{{md .}}</div>
+  </section>
+  {{end}}
+
+  <div class="grid2">
+    <section>
+      <h2>Diagnosis</h2>
+      <div class="card">
+        <dl class="kv">
+          <dt>Cause</dt><dd>{{md (or $i.Hypothesis "Not determined yet")}}</dd>
+          <dt>Confidence</dt><dd>{{or $i.Confidence "—"}}</dd>
+          <dt>Path</dt><dd>{{or $i.Remediation "—"}}</dd>
+          <dt>Phase</dt><dd>{{$i.Phase}}</dd>
+        </dl>
+      </div>
+    </section>
+    <section>
+      <h2>Change and approval</h2>
+      <div class="card">
+        <dl class="kv">
+          <dt>Proposed</dt><dd>{{with $i.ProposedAction}}<a href="{{.}}">{{.}}</a>{{else}}No pull request{{end}}</dd>
+          <dt>Policy</dt><dd>{{or $i.PolicyResult "—"}}{{if $i.Denials}} · {{$i.Denials}} denied{{end}}</dd>
+          <dt>Approved</dt><dd>{{approval $i.HumanApproval}}{{with $i.ApprovedBy}} by {{.}}{{end}}</dd>
+          <dt>Deployment</dt><dd>{{or $i.DeploymentResult "—"}}</dd>
+          <dt>Service health</dt><dd>{{or $i.ServiceHealth "—"}}</dd>
+        </dl>
+      </div>
+    </section>
+  </div>
+
+  {{with $i.Evidence}}
+  <section>
+    <h2>Evidence</h2>
+    <div class="card"><ul class="ev">{{range .}}<li>{{md .}}</li>{{end}}</ul></div>
+  </section>
+  {{end}}
+
+  {{with $i.PolicyDenials}}
+  <section>
+    <h2>Denied by policy</h2>
+    <div class="card"><ul class="ev">{{range .}}<li class="mono">{{.}}</li>{{end}}</ul></div>
+  </section>
+  {{end}}
+
+  {{with $i.Verification}}
+  <section>
+    <h2>Remediation and verification</h2>
+    <div class="card"><ul class="ev">{{range .}}<li>{{md .}}</li>{{end}}</ul></div>
+  </section>
+  {{end}}
+
+  <section>
+    <h2>Activity · {{len $i.ToolCalls}} calls, in order</h2>
+    <div class="card scroll">
+      <table>
+        <thead><tr><th>Tool</th><th>Decision</th><th>Arguments</th><th>Reason</th><th class="num">ms</th></tr></thead>
+        <tbody>
+          {{range $i.Phases}}
+          <tr class="phase"><td colspan="5">{{.Name}}</td></tr>
+          {{range .Calls}}
+          <tr>
+            <td class="mono">{{.Tool}}</td>
+            <td><span class="pill {{if eq .Decision "allowed"}}ok{{else if eq .Decision "denied"}}bad{{else if eq .Decision "error"}}warn{{end}}">{{.Decision}}</span></td>
+            <td class="args">{{short .Args 220}}</td>
+            <td>{{short .Reason 200}}</td>
+            <td class="num">{{.DurationMs}}</td>
+          </tr>
+          {{end}}
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Run</h2>
+    <div class="card">
+      <dl class="kv num">
+        <dt>Model</dt><dd class="mono">{{$i.Model}}</dd>
+        <dt>Agent</dt><dd class="mono">{{$i.Agent}} {{$i.AgentVer}}</dd>
+        <dt>Model calls</dt><dd>{{$i.Usage.ModelCalls}}</dd>
+        <dt>Tokens</dt><dd>{{$i.Usage.InputTokens}} in · {{$i.Usage.OutputTokens}} out · {{$i.Usage.CacheRead}} cached</dd>
+        <dt>Started by</dt><dd>{{$i.InitiatedBy}}</dd>
+      </dl>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{template "head"}}
+<meta http-equiv="refresh" content="30">
+<title>SRE Agent Activity</title>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <h1>SRE Agent Activity</h1>
+    <div class="meta"><span>Environment <b>{{.Env}}</b></span><span>From the audit trail · refreshed {{.Now}}</span></div>
+  </header>
+
+  {{with .Err}}<div class="banner">{{.}}</div>{{end}}
+
+  {{with .Summary}}
+  <div class="tiles" role="list">
+    <div class="tile" role="listitem"><b>{{.Total}}</b><span>Incidents</span></div>
+    <div class="tile" role="listitem"><b>{{.Resolved}}</b><span>Resolved and verified</span></div>
+    <div class="tile{{if .NeedsHuman}} attn{{end}}" role="listitem"><b>{{.NeedsHuman}}</b><span>Need a human</span></div>
+    <div class="tile" role="listitem"><b>{{.Running}}</b><span>In progress</span></div>
+    <div class="tile" role="listitem"><b>{{.PRs}}</b><span>Pull requests opened</span></div>
+    <div class="tile" role="listitem"><b>{{.Denials}}</b><span>Actions denied by policy</span></div>
+  </div>
+  {{end}}
+
+  <section>
+    <h2>Incidents, newest first</h2>
+    {{if .Incidents}}
+    <div class="list">
+      {{range .Incidents}}
+      <article class="inc">
+        <div class="inc-head">
+          {{template "pill" .}}
+          <a class="what" href="/incidents/{{.ExecutionID}}">{{.Service}} · {{.Alert}}</a>
+          <span class="when num">{{.Started}} · {{.Ago}}{{with .Duration}} · {{.}}{{end}}</span>
+        </div>
+        {{with .Hypothesis}}<p><span class="label">Cause</span>{{md (short . 320)}}</p>{{end}}
+        {{with .Next}}<p class="next"><span class="label">Recommended next step</span>{{md (short . 420)}}</p>{{end}}
+        <div class="foot num">
+          {{with .ProposedAction}}<a href="{{.}}">Pull request</a>{{end}}
+          <span>{{len .ToolCalls}} tool calls</span>
+          {{if .Reads}}<span>{{.Reads}} docs read</span>{{end}}
+          {{if .Denials}}<span>{{.Denials}} denied by policy</span>{{end}}
+          {{with .Confidence}}<span>confidence {{.}}</span>{{end}}
+          <span class="mono">{{.ExecutionID}}</span>
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="empty">No incidents yet. When Alertmanager sends a critical payment-api alert, the agent investigates and its record appears here within a few seconds.</div>
+    {{end}}
+  </section>
+</main>
+</body>
+</html>

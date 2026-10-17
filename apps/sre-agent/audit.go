@@ -37,6 +37,9 @@ type AuditRecord struct {
 	Evidence    []string `json:"evidence,omitempty"`
 	Confidence  string   `json:"confidence,omitempty"`
 	Remediation string   `json:"remediation_path,omitempty"`
+	// What the agent says should happen next; for an escalation, the steps
+	// a human should take.
+	Recommendation string `json:"recommendation,omitempty"`
 
 	ProposedAction   string   `json:"proposed_action,omitempty"`
 	PolicyResult     string   `json:"policy_result"`

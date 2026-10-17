@@ -66,6 +66,7 @@ Private subnets ──> S3 gateway endpoint (no NAT charge)
 | Humans | AWS SSO → EKS access entry | Cluster admin (dev) |
 | GitHub Actions | OIDC → STS; each role trusts one workflow file on one ref | `terraform-deployer` (`environment.yml`, owner-only), `terraform-plan` (`ci.yml` on PRs), `image-builder` (`images.yml` on main) |
 | Workloads | EKS Pod Identity, one role per ServiceAccount | Only their own AWS API calls |
+| Audit dashboard | EKS Pod Identity (`sre-dashboard`) | List and read `audit/*`; nothing else |
 | Argo CD → GitHub | Read-only GitHub App, hourly tokens | Read this repo |
 | MCP server → GitHub | Separate GitHub App | Read repo, open PRs from `agent/*` branches |
 | SRE agent → MCP server | ServiceAccount token, verified with TokenReview | Whatever the OPA policy allows |

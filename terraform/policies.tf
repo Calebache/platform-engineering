@@ -64,6 +64,30 @@ data "aws_iam_policy_document" "external_secrets" {
 
 # --- external-dns ---------------------------------------------------------
 
+# --- sre-dashboard --------------------------------------------------------
+
+# The audit dashboard reads the trail the agent writes. Read-only, audit/
+# only: it can't write, delete, or see anything else in the bucket. (The
+# agent's own role is the reverse: append-only, no list or read.)
+data "aws_iam_policy_document" "sre_dashboard" {
+  statement {
+    sid       = "ListAuditRecords"
+    actions   = ["s3:ListBucket"]
+    resources = [data.aws_s3_bucket.audit.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["audit/*"]
+    }
+  }
+
+  statement {
+    sid       = "ReadAuditRecords"
+    actions   = ["s3:GetObject"]
+    resources = ["${data.aws_s3_bucket.audit.arn}/audit/*"]
+  }
+}
+
 data "aws_iam_policy_document" "external_dns" {
   statement {
     sid = "ManageRecordsInPlatformZone"

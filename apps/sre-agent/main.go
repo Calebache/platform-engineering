@@ -11,6 +11,9 @@
 //	                         approval, verifies recovery, writes the audit record.
 //	sre-agent whoami         proves the worker's identity and its limits
 //	                         (doc.md §17): what it may call, and what it may not.
+//	sre-agent dashboard      a read-only web page over the audit trail: what
+//	                         the agent did in each incident and what it
+//	                         recommends. Can only list and read audit/*.
 package main
 
 import (
@@ -43,8 +46,10 @@ func main() {
 		err = runInvestigate(ctx, logger, os.Args[2:])
 	case "whoami":
 		err = runWhoami(ctx, os.Args[2:])
+	case "dashboard":
+		err = runDashboard(ctx, logger, os.Args[2:])
 	default:
-		err = fmt.Errorf("usage: sre-agent orchestrator|investigate|whoami (got %q)", mode)
+		err = fmt.Errorf("usage: sre-agent orchestrator|investigate|whoami|dashboard (got %q)", mode)
 	}
 	if err != nil {
 		logger.Error("exiting", "error", err)

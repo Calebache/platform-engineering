@@ -304,11 +304,16 @@ func TestEscalationOpensNoPullRequest(t *testing.T) {
 	turns := []string{
 		toolUse("get_error_patterns", map[string]any{"service": "payment-api"}),
 		toolUse("submit_findings", map[string]any{"hypothesis": "password mismatch after rotation", "confidence": "high",
-			"evidence": []string{"failed SASL auth"}, "remediation_path": "escalate"}),
+			"evidence": []string{"failed SASL auth"}, "remediation_path": "escalate",
+			"recommendation": "Restore the previous secret version in Secrets Manager, force-sync the ExternalSecret, restart payment-api."}),
 	}
 	outcome, rec, _, _ := runIncident(t, testCfg(), turns, sess)
 	if outcome != "escalated" || sess.prs != 0 || rec.ProposedAction != "" {
 		t.Fatalf("outcome=%s prs=%d action=%q", outcome, sess.prs, rec.ProposedAction)
+	}
+	// The human-facing next step is kept in the audit record.
+	if !strings.Contains(rec.Recommendation, "Restore the previous secret version") {
+		t.Fatalf("recommendation not recorded: %q", rec.Recommendation)
 	}
 }
 

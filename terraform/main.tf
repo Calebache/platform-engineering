@@ -132,6 +132,12 @@ locals {
       service_account = "sre-agent"
       policy_json     = data.aws_iam_policy_document.sre_agent.json
     }
+    # Read-only view of the agent's audit trail (sre-agent dashboard mode).
+    "sre-dashboard" = {
+      namespace       = "sre-agent"
+      service_account = "sre-dashboard"
+      policy_json     = data.aws_iam_policy_document.sre_dashboard.json
+    }
     "external-dns" = {
       namespace       = "external-dns"
       service_account = "external-dns"

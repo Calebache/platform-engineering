@@ -60,8 +60,9 @@ var (
 			"evidence":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "concrete evidence: error pattern and count, start time, rollout, commit SHA, log lines checked"},
 			"confidence":       map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
 			"remediation_path": map[string]any{"type": "string", "enum": []string{"pull_request", "escalate", "none"}, "description": "pull_request if the runbook allows a Git fix, escalate if it requires a human, none if there is no incident"},
+			"recommendation":   map[string]any{"type": "string", "description": "what should happen next, for the humans reading the audit trail: for pull_request, the fix you will propose; for escalate, the concrete steps a human should take (follow the runbook) and what to check afterwards; for none, why no action is needed"},
 		},
-		required: []string{"hypothesis", "evidence", "confidence", "remediation_path"},
+		required: []string{"hypothesis", "evidence", "confidence", "remediation_path", "recommendation"},
 	}
 	submitRemediation = localTool{
 		name:        "submit_remediation",
@@ -239,12 +240,14 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 		Evidence        []string `json:"evidence"`
 		Confidence      string   `json:"confidence"`
 		RemediationPath string   `json:"remediation_path"`
+		Recommendation  string   `json:"recommendation"`
 	}
 	if err := json.Unmarshal(res.input, &findings); err != nil {
 		return fail("investigate", fmt.Errorf("parse findings: %w", err))
 	}
 	aud.update(func(r *AuditRecord) {
 		r.Hypothesis, r.Evidence, r.Confidence, r.Remediation = findings.Hypothesis, findings.Evidence, findings.Confidence, findings.RemediationPath
+		r.Recommendation = findings.Recommendation
 	})
 	aud.flush(ctx)
 	logger.Info("findings", "hypothesis", findings.Hypothesis, "confidence", findings.Confidence, "path", findings.RemediationPath)
