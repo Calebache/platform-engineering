@@ -2,7 +2,9 @@
 # Static Go binary on distroless: no shell, no package manager, runs as
 # non-root (uid 65532). Built for the node architecture (linux/amd64) even
 # on Apple Silicon via --platform.
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.24 AS build
+# Go 1.26.9 (2026-10-08) fixes stdlib CVE-2026-78667, -78669 and -97031; a
+# security point release, so newer than the usual two-week rule. Pinned by digest.
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
