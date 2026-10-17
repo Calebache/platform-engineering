@@ -75,6 +75,32 @@ spec:
             resources:
               requests: { cpu: 25m, memory: 64Mi }
               limits: { memory: 128Mi }
+          # Critical alerts for services the agent covers go to the SRE
+          # agent's orchestrator; everything else (Watchdog, platform
+          # warnings, the agent's own alerts) goes nowhere for now.
+          config:
+            global:
+              resolve_timeout: 5m
+            route:
+              receiver: "null"
+              group_by: ["alertname", "service"]
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 4h
+              routes:
+                - receiver: sre-agent
+                  matchers:
+                    - service=~"payment-api"
+                    - severity="critical"
+            receivers:
+              - name: "null"
+              - name: sre-agent
+                webhook_configs:
+                  - url: http://sre-agent.sre-agent.svc/alerts
+                    send_resolved: true
+                    max_alerts: 20
+            templates:
+              - /etc/alertmanager/config/*.tmpl
 
         grafana:
           # Read-only anonymous access; dashboards are provisioned from Git

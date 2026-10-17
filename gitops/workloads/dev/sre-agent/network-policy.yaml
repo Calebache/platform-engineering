@@ -1,0 +1,75 @@
+# Orchestrator: only Alertmanager (and Prometheus, for metrics) may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orchestrator-ingress
+  namespace: sre-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sre-agent-orchestrator
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+        - port: 9090
+---
+# Incident workers: nothing may connect to them, and they may connect only to
+# what an investigation needs. This limits where injected instructions in
+# logs or commits could send data.
+#   - DNS
+#   - the MCP server (their only window into the platform)
+#   - the EKS Pod Identity agent (link-local, for AWS credentials)
+#   - HTTPS outside the VPC: Bedrock (us-east-1) and S3 via the NAT gateway
+#     / S3 endpoint. NetworkPolicy can't filter by hostname; see
+#     docs/production-agent-topology.md for VPC endpoints and egress proxies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-isolation
+  namespace: sre-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sre-agent-worker
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-server
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-server
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }

@@ -1,7 +1,11 @@
-# The SRE agent's namespace and identity. The agent itself comes later; the
-# ServiceAccount exists now because it is the one identity the MCP server's
-# policy accepts, and the Pod Identity role (Bedrock in us-east-1, audit
-# writes) is already bound to it by Terraform.
+# The SRE agent's namespace and its two identities:
+#
+#   sre-agent               the incident worker. The only identity the MCP
+#                           server's policy accepts, and bound by Terraform
+#                           (Pod Identity) to a role allowing Bedrock in
+#                           us-east-1 and PutObject on audit/*. No Kubernetes RBAC.
+#   sre-agent-orchestrator  receives webhooks and creates incident Jobs. No
+#                           AWS role, no model access, no MCP access.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -15,5 +19,10 @@ kind: ServiceAccount
 metadata:
   name: sre-agent
   namespace: sre-agent
-# No Kubernetes RBAC: the agent reads the cluster only through the MCP server.
 automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent-orchestrator
+  namespace: sre-agent

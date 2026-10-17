@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+  labels:
+    app.kubernetes.io/name: sre-agent-orchestrator
+    app.kubernetes.io/part-of: agentic-sre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sre-agent-orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sre-agent-orchestrator
+        app.kubernetes.io/part-of: agentic-sre
+    spec:
+      serviceAccountName: sre-agent-orchestrator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:03aa5283ec7f
+          args: ["orchestrator"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            # Incident Jobs run this same image (the admission policy only
+            # allows the agent's own ECR repository).
+            - name: AGENT_IMAGE
+              value: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:03aa5283ec7f
+            - name: ALLOWED_SERVICES
+              value: payment-api
+            - name: INCIDENT_COOLDOWN
+              value: 30m
+            - name: INCIDENT_DEADLINE_SECONDS
+              value: "3600"
+            # Passed through to each incident Job verbatim.
+            - name: WORKER_BEDROCK_REGION
+              value: us-east-1
+            - name: WORKER_MODEL_ID
+              value: anthropic.claude-opus-5-5
+            - name: WORKER_AWS_REGION
+              value: ca-central-1
+            - name: WORKER_AUDIT_BUCKET
+              value: agentic-sre-dev-audit-103544553431
+            - name: WORKER_ENVIRONMENT
+              value: dev
+            - name: WORKER_MCP_ENDPOINT
+              value: http://mcp-server.mcp-server.svc/mcp
+            # Demo of doc.md §14: the agent first tries a direct patch, which
+            # the platform refuses, then follows required_path. Set "false"
+            # for normal operation.
+            - name: WORKER_DEMO_ATTEMPT_DIRECT_FIX
+              value: "true"
+            - name: WORKER_MERGE_TIMEOUT
+              value: 45m
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+  labels:
+    app.kubernetes.io/name: sre-agent-orchestrator
+spec:
+  selector:
+    app.kubernetes.io/name: sre-agent-orchestrator
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: metrics
+      port: 9090
+      targetPort: metrics

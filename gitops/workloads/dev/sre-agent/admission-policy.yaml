@@ -1,0 +1,57 @@
+# Pins the shape of every Job created in the sre-agent namespace, whoever
+# creates it. Even if the orchestrator were compromised, it could only launch
+# the agent's own image, as the worker identity, running `investigate`, with
+# the restricted security context and no extra volumes.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: sre-agent-incident-jobs
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  variables:
+    - name: pod
+      expression: object.spec.template.spec
+    - name: c
+      expression: object.spec.template.spec.containers[0]
+  validations:
+    - expression: variables.pod.serviceAccountName == 'sre-agent'
+      message: incident Jobs must run as the sre-agent ServiceAccount
+    - expression: size(variables.pod.containers) == 1 && (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0)
+      message: incident Jobs must have exactly one container and no init containers
+    - expression: variables.c.image.startsWith('103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:') || variables.c.image.startsWith('103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent@sha256:')
+      message: incident Jobs must use the agent's own image from ECR (immutable tags)
+    - expression: has(variables.c.args) && size(variables.c.args) > 0 && variables.c.args[0] == 'investigate' && !has(variables.c.command)
+      message: incident Jobs may only run the investigate entrypoint
+    - expression: has(variables.pod.automountServiceAccountToken) && variables.pod.automountServiceAccountToken == false
+      message: incident Jobs must not mount a Kubernetes API token
+    - expression: >-
+        (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+        (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+        (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+      message: incident Jobs must not use host namespaces
+    - expression: >-
+        has(variables.pod.volumes) && variables.pod.volumes.all(v, has(v.projected) &&
+        v.projected.sources.all(s, has(s.serviceAccountToken) && s.serviceAccountToken.audience == 'mcp-server'))
+      message: incident Jobs may only mount a projected token for the mcp-server audience
+    - expression: >-
+        has(variables.c.securityContext) && variables.c.securityContext.allowPrivilegeEscalation == false &&
+        variables.c.securityContext.readOnlyRootFilesystem == true
+      message: incident Jobs must not allow privilege escalation and must use a read-only root filesystem
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: sre-agent-incident-jobs
+spec:
+  policyName: sre-agent-incident-jobs
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: sre-agent

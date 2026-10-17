@@ -1,0 +1,33 @@
+# The orchestrator may manage Jobs in its own namespace, and read their Pods
+# (for termination messages). It can't create Pods directly, read Secrets,
+# or touch any other namespace.
+#
+# Creating a Job that runs as the sre-agent ServiceAccount means obtaining
+# that ServiceAccount's AWS role, so what those Jobs may contain is pinned
+# separately by the ValidatingAdmissionPolicy in admission-policy.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sre-agent-orchestrator
+  namespace: sre-agent
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-agent-orchestrator
+  namespace: sre-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sre-agent-orchestrator
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent-orchestrator
+    namespace: sre-agent
