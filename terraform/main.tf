@@ -152,5 +152,12 @@ locals {
       service_account = "cluster-autoscaler"
       policy_json     = data.aws_iam_policy_document.cluster_autoscaler.json
     }
+    # Provisions the NLB in front of Envoy Gateway. Upstream policy, vendored
+    # unmodified from the controller's v3.5.0 release (docs/install/iam_policy.json).
+    "aws-load-balancer-controller" = {
+      namespace       = "kube-system"
+      service_account = "aws-load-balancer-controller"
+      policy_json     = jsonencode(jsondecode(file("${path.module}/iam-policies/aws-load-balancer-controller.json")))
+    }
   }
 }

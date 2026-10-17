@@ -10,15 +10,20 @@ metadata:
   name: platform
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-wave: "-3"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   description: Platform components and workloads for the agentic SRE PoC.
-  # Add upstream Helm chart repos (ingress-nginx, cert-manager, ...) as their
-  # Applications are introduced.
+  # Deny by default: only these sources can be deployed. Add a chart repo here
+  # in the same change that introduces its Application.
   sourceRepos:
     - https://github.com/Calebache/platform-engineering.git
+    - https://kubernetes.github.io/autoscaler
+    - https://aws.github.io/eks-charts
+    - https://charts.jetstack.io
+    - https://kubernetes-sigs.github.io/external-dns
+    - docker.io/envoyproxy
   destinations:
     - server: https://kubernetes.default.svc
       namespace: "*"

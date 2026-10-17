@@ -1,0 +1,36 @@
+# Provisions the internet-facing NLB in front of Envoy Gateway. AWS
+# permissions come from Pod Identity (kube-system/aws-load-balancer-controller,
+# created by Terraform), so no role annotation is needed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 3.5.0
+    helm:
+      valuesObject:
+        clusterName: agentic-sre-dev
+        region: ca-central-1
+        # Look the VPC up by tag: its ID changes every time the disposable
+        # environment is recreated.
+        vpcTags:
+          Name: agentic-sre-dev
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

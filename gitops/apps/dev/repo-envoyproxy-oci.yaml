@@ -1,0 +1,17 @@
+# Envoy Gateway's chart is published only as an OCI artifact on Docker Hub.
+# Argo CD needs a repository entry with enableOCI to pull it. Public registry,
+# so no credentials: this Secret is safe to keep in Git.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-envoyproxy-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+stringData:
+  name: envoyproxy
+  type: helm
+  url: docker.io/envoyproxy
+  enableOCI: "true"

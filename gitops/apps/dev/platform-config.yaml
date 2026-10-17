@@ -1,0 +1,24 @@
+# Cluster-wide configuration that needs the CRDs from earlier waves:
+# ClusterIssuers, the GatewayClass and the public Gateway.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/Calebache/platform-engineering.git
+    targetRevision: main
+    path: gitops/platform/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: envoy-gateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

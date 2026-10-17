@@ -1,0 +1,39 @@
+# Let's Encrypt via DNS-01 on Route53 (needed for the *.calebache.com
+# wildcard). ClusterIssuers use cert-manager's Pod Identity credentials.
+#
+# Production limits: 5 certificates per week for the exact same set of names.
+# The environment is recreated often, so switch the Gateway's annotation to
+# letsencrypt-staging when iterating and back to prod for demos.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - selector:
+          dnsZones:
+            - calebache.com
+        dns01:
+          route53:
+            region: ca-central-1
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - selector:
+          dnsZones:
+            - calebache.com
+        dns01:
+          route53:
+            region: ca-central-1

@@ -1,0 +1,43 @@
+# Issues the Gateway's TLS certificate from Let's Encrypt using DNS-01 on
+# Route53. AWS permissions come from Pod Identity (cert-manager/cert-manager).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.20.4
+    helm:
+      valuesObject:
+        crds:
+          enabled: true
+        serviceAccount:
+          name: cert-manager
+        # Lets the cert-manager.io/cluster-issuer annotation on a Gateway
+        # create its Certificate. Needs the Gateway API CRDs (wave -2).
+        config:
+          apiVersion: controller.config.cert-manager.io/v1alpha1
+          kind: ControllerConfiguration
+          enableGatewayAPI: true
+        # Check DNS-01 propagation against public resolvers, not the VPC's.
+        extraArgs:
+          - --dns01-recursive-nameservers-only
+          - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

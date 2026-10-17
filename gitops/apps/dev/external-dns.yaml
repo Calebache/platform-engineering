@@ -1,0 +1,51 @@
+# Publishes HTTPRoute hostnames as Route53 records pointing at the Gateway's
+# NLB. AWS permissions come from Pod Identity (external-dns/external-dns),
+# limited to the calebache.com zone.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://kubernetes-sigs.github.io/external-dns
+    chart: external-dns
+    targetRevision: 1.22.0
+    helm:
+      valuesObject:
+        provider:
+          name: aws
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: ca-central-1
+        serviceAccount:
+          create: true
+          name: external-dns
+        sources:
+          - gateway-httproute
+        domainFilters:
+          - calebache.com
+        extraArgs:
+          - --aws-zone-type=public
+        # sync (not upsert-only) so records are removed with their routes. The
+        # TXT ownership registry limits deletes to records this cluster created;
+        # anything else in the zone is never touched.
+        policy: sync
+        registry: txt
+        txtOwnerId: agentic-sre-dev
+        txtPrefix: _externaldns.
+        interval: 1m
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

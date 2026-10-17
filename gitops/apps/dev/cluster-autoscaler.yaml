@@ -1,0 +1,43 @@
+# Scales the managed node group between its min and max size (2-3 in dev).
+# Finds the node group through the ASG tags EKS adds automatically; AWS
+# permissions come from Pod Identity (kube-system/cluster-autoscaler).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-autoscaler
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://kubernetes.github.io/autoscaler
+    chart: cluster-autoscaler
+    targetRevision: 9.58.0
+    helm:
+      valuesObject:
+        fullnameOverride: cluster-autoscaler
+        awsRegion: ca-central-1
+        autoDiscovery:
+          clusterName: agentic-sre-dev
+        # The autoscaler's minor version must match the cluster's (1.36); the
+        # chart's default image is 1.35.
+        image:
+          tag: v1.36.1
+        rbac:
+          serviceAccount:
+            create: true
+            name: cluster-autoscaler
+        extraArgs:
+          expander: least-waste
+          balance-similar-node-groups: true
+          skip-nodes-with-local-storage: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

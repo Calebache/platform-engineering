@@ -49,6 +49,25 @@ resource "helm_release" "argocd" {
     server = {
       service = { type = "ClusterIP" }
     }
+    configs = {
+      cm = {
+        # Argo CD doesn't assess child Application health by default, which
+        # makes sync waves between Applications meaningless. This restores
+        # it, so wave N+1 waits until every wave-N Application is Healthy.
+        "resource.customizations.health.argoproj.io_Application" = <<-LUA
+          hs = {}
+          hs.status = "Progressing"
+          hs.message = ""
+          if obj.status ~= nil and obj.status.health ~= nil then
+            hs.status = obj.status.health.status
+            if obj.status.health.message ~= nil then
+              hs.message = obj.status.health.message
+            end
+          end
+          return hs
+        LUA
+      }
+    }
   })]
 
   depends_on = [kubernetes_secret_v1.repo]
