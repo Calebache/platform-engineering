@@ -1,0 +1,124 @@
+# The audit dashboard: a read-only web page over the agent's audit trail
+# (what it did in each incident, and what it recommends). Same image as the
+# agent, `dashboard` mode. Its own ServiceAccount and AWS role, which can only
+# list and read audit/* in the audit bucket (Terraform: sre-dashboard).
+#
+# Not exposed publicly: audit records hold log excerpts. Open it with
+#   kubectl -n sre-agent port-forward svc/sre-dashboard 8088:80
+# then http://localhost:8088.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-dashboard
+  namespace: sre-agent
+# It never calls the Kubernetes API. (Pod Identity injects its own token.)
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-dashboard
+  namespace: sre-agent
+  labels:
+    app.kubernetes.io/name: sre-dashboard
+    app.kubernetes.io/part-of: agentic-sre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sre-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sre-dashboard
+        app.kubernetes.io/part-of: agentic-sre
+    spec:
+      serviceAccountName: sre-dashboard
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:3ab2fe75be43
+          args: ["dashboard", "-addr", ":8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Pods can't read the region from instance metadata (hop limit 1).
+            - name: AWS_REGION
+              value: ca-central-1
+            - name: AUDIT_BUCKET
+              value: agentic-sre-dev-audit-103544553431
+            - name: ENVIRONMENT
+              value: dev
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-dashboard
+  namespace: sre-agent
+  labels:
+    app.kubernetes.io/name: sre-dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: sre-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# No pod may connect to it (kubectl port-forward doesn't go through the pod
+# network). It may reach only DNS, the Pod Identity agent and HTTPS outside
+# the VPC (S3, through the gateway endpoint).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-isolation
+  namespace: sre-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sre-dashboard
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
