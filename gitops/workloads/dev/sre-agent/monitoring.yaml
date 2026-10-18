@@ -25,18 +25,22 @@ spec:
     - name: sre-agent
       rules:
         # The escalation channel: the agent finished an incident without
-        # resolving it. The hypothesis is in the audit record and in the
-        # Job's termination message.
+        # resolving it. One alert per incident (sre_agent_incident_info has
+        # one series per finished Job, for 24h), routed to humans by the
+        # sre-agent-humans AlertmanagerConfig (gitops/platform/dev/), never
+        # back to the agent. The hypothesis label is sanitised and capped at
+        # 200 characters by the orchestrator; the full record is in S3.
         - alert: SreAgentEscalation
-          expr: sum by (service, outcome) (sre_agent_incidents{outcome=~"escalated|failed|not_recovered|approval_timeout|pr_rejected|deadline_exceeded|unknown"}) > 0
+          expr: max by (service, alert, outcome, incident_id, hypothesis) (sre_agent_incident_info{outcome=~"escalated|failed|not_recovered|approval_timeout|pr_rejected|deadline_exceeded|unknown"}) > 0
           labels:
             severity: warning
           annotations:
-            summary: "SRE agent needs a human for {{ $labels.service }} ({{ $labels.outcome }})"
+            summary: "SRE agent needs a human: {{ $labels.incident_id }} on {{ $labels.service }} ended {{ $labels.outcome }}"
             description: >-
-              An incident Job ended as {{ $labels.outcome }}. Read the audit
-              record in S3 (audit/<date>/<incident-id>.json) or
-              `kubectl -n sre-agent get jobs` and the pod's termination message.
+              {{ $labels.alert }} on {{ $labels.service }} ended as {{ $labels.outcome }}.
+              Hypothesis: {{ if $labels.hypothesis }}{{ $labels.hypothesis }}{{ else }}none recorded{{ end }}
+            audit: 's3://agentic-sre-dev-audit-103544553431/{{ reReplaceAll "^inc-(....)(..)(..)-.*$" "audit/$1/$2/$3/" $labels.incident_id }}{{ $labels.incident_id }}.json'
+            dashboard: "kubectl -n sre-agent port-forward svc/sre-dashboard 8088:80, then http://localhost:8088/incidents/{{ $labels.incident_id }}"
         - alert: SreAgentOrchestratorDown
           expr: absent(up{namespace="sre-agent", service="sre-agent"} == 1)
           for: 5m

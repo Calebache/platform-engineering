@@ -72,12 +72,25 @@ spec:
 
         alertmanager:
           alertmanagerSpec:
+            # Human notifications come from AlertmanagerConfigs
+            # (gitops/platform/dev/alertmanager-humans.yaml). Only this
+            # namespace may add them, and their routes see every alert
+            # instead of being limited to their own namespace.
+            alertmanagerConfigNamespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+            alertmanagerConfigMatcherStrategy:
+              type: None
             resources:
               requests: { cpu: 25m, memory: 64Mi }
               limits: { memory: 128Mi }
           # Critical alerts for services the agent covers go to the SRE
-          # agent's orchestrator; everything else (Watchdog, platform
-          # warnings, the agent's own alerts) goes nowhere for now.
+          # agent's orchestrator. The agent's own alerts never do (they'd
+          # trigger it on itself): the route excludes SreAgent* by name as
+          # well as by severity/service. Humans are notified through the
+          # sre-agent-humans AlertmanagerConfig, merged in ahead of these
+          # routes with continue: true. Everything else (Watchdog, platform
+          # warnings) goes nowhere.
           config:
             global:
               resolve_timeout: 5m
@@ -92,6 +105,7 @@ spec:
                   matchers:
                     - service=~"payment-api"
                     - severity="critical"
+                    - alertname!~"SreAgent.*"
             receivers:
               - name: "null"
               - name: sre-agent

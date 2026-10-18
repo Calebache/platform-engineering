@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Brings an environment up from nothing and proves it works.
 #
-#   1. Preflight: tools, credentials, Terraform >= 1.11, the GitHub App
-#      secrets (created once, outside Terraform), and every image the GitOps
+#   1. Preflight: tools, credentials, Terraform >= 1.11, the GitHub App and
+#      Slack webhook secrets (created once, outside Terraform), and every image the GitOps
 #      manifests pin actually exists in ECR.
 #   2. Bootstrap the long-lived pieces (idempotent): state bucket, ECR
 #      repositories, audit bucket.
@@ -52,11 +52,16 @@ for secret in "agentic-sre/argocd/github-app" "${PROJECT}-${ENVIRONMENT}/mcp-ser
   aws secretsmanager describe-secret --region "$REGION" --secret-id "$secret" >/dev/null 2>&1 \
     || die "secret $secret is missing; create it with scripts/store-github-app.sh (see its header)"
 done
+# Alertmanager's Slack webhook. Without it the ExternalSecret stays Degraded
+# and platform-config (wave 1) never becomes Healthy.
+slack_secret="${PROJECT}-${ENVIRONMENT}/alertmanager/slack"
+aws secretsmanager describe-secret --region "$REGION" --secret-id "$slack_secret" >/dev/null 2>&1 \
+  || die "secret $slack_secret is missing; create it (see gitops/platform/$ENVIRONMENT/alertmanager-humans.yaml)"
 # The cluster's admin access entry names CI's deployer role, so it must exist.
 deployer="${PROJECT}-${ENVIRONMENT}-terraform-deployer-role"
 aws iam get-role --role-name "$deployer" >/dev/null 2>&1 \
   || die "IAM role $deployer is missing; create the CI roles with scripts/bootstrap-ci.sh"
-log "Preflight: Terraform $tf_version, account $ACCOUNT_ID, GitHub App secrets and CI roles present"
+log "Preflight: Terraform $tf_version, account $ACCOUNT_ID, GitHub App and Slack secrets and CI roles present"
 
 # Every image the manifests pin must exist, or workloads come up in
 # ImagePullBackOff. (ECR outlives environments, so normally they do.)

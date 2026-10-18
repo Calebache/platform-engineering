@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -122,11 +124,38 @@ func TestReconcileReadsOutcomes(t *testing.T) {
 	_, _ = kube.CoreV1().Pods("sre-agent").Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: j.Name + "-x", Namespace: "sre-agent", Labels: map[string]string{"job-name": j.Name}},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{Message: `{"outcome":"escalated"}`}}}}},
+			Terminated: &corev1.ContainerStateTerminated{Message: `{"outcome":"escalated","hypothesis":"DB auth failed\n<!channel> after rotation"}`}}}}},
 	}, metav1.CreateOptions{})
 
 	o.reconcile(ctx)
 	if got := o.outcome(ctx, &j); got != "escalated" {
 		t.Fatalf("outcome %q", got)
+	}
+	id := j.Annotations[annIncidentID]
+	if !strings.HasPrefix(id, "inc-") {
+		t.Fatalf("incident id annotation %q", id)
+	}
+	info := o.metrics.info.WithLabelValues("payment-api", "PaymentApiHighErrorRate", "escalated", id, "DB auth failed !channel after rotation")
+	if v := testutil.ToFloat64(info); v != 1 {
+		t.Fatalf("incident info = %v", v)
+	}
+	if n := testutil.CollectAndCount(o.metrics.info); n != 1 {
+		t.Fatalf("%d info series, want 1", n)
+	}
+}
+
+func TestLabelText(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"a\n\tb  <!here> & c", 50, "a b !here c"},
+		{"ééééé", 5, "ééééé"},
+		{"éééééé", 5, "éééé…"},
+	} {
+		if got := labelText(c.in, c.n); got != c.want {
+			t.Errorf("labelText(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
 	}
 }

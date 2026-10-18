@@ -128,7 +128,9 @@ Alertmanager ──webhook──> orchestrator ──creates──> incident Job
    firing) must agree before the incident is resolved.
 7. The worker writes the audit record to S3 at every phase, and reports its
    outcome in the Job's termination message. Anything other than
-   "resolved" or "no action" raises `SreAgentEscalation`.
+   "resolved" or "no action" raises `SreAgentEscalation`, one alert per
+   incident, which Alertmanager sends to a human on Slack (never back to the
+   agent) with the incident id, outcome, hypothesis and audit record path.
 
 ### Incident Jobs
 

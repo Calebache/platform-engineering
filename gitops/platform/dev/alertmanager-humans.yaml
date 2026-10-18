@@ -1,0 +1,97 @@
+# Human notifications. The root Alertmanager config (kube-prometheus-stack
+# values) sends critical payment-api alerts to the SRE agent; this adds a
+# Slack copy of those and is the only place the agent's own alerts
+# (SreAgentEscalation, SreAgentOrchestratorDown) go. The operator merges it in
+# as the first child route with continue: true, so it never stops an alert
+# reaching the agent, and the agent's route excludes SreAgent* alerts, so
+# nothing here loops back to it.
+#
+# This lives in an AlertmanagerConfig rather than a mounted Secret on
+# purpose: a missing Secret volume would keep Alertmanager (wave -2) from
+# starting, before External Secrets (wave -1) could ever create it. A missing
+# webhook only makes the operator skip this object.
+#
+# The webhook URL lives in Secrets Manager, outside Terraform, and outlives
+# the environment:
+#   aws secretsmanager create-secret --region ca-central-1 \
+#     --name agentic-sre-dev/alertmanager/slack \
+#     --secret-string '{"webhook_url":"https://hooks.slack.com/services/..."}'
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: alertmanager-slack
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    name: alertmanager-slack
+    creationPolicy: Owner
+  data:
+    - secretKey: webhook-url
+      remoteRef:
+        key: agentic-sre-dev/alertmanager/slack
+        property: webhook_url
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: sre-agent-humans
+  namespace: monitoring
+spec:
+  route:
+    receiver: none
+    routes:
+      # The agent asking for a human, or the agent itself being down.
+      - receiver: slack-escalations
+        matchers:
+          - name: alertname
+            matchType: "=~"
+            value: SreAgent.*
+        groupBy: [alertname, service, incident_id]
+        groupWait: 30s
+        groupInterval: 5m
+        # SreAgentEscalation lasts 24h (the Job's TTL); say it once.
+        repeatInterval: 24h
+      # A copy of what the agent is investigating, so a human knows an
+      # incident is open before the agent reports back.
+      - receiver: slack-incidents
+        matchers:
+          - name: alertname
+            matchType: "!~"
+            value: SreAgent.*
+          - name: service
+            matchType: "=~"
+            value: payment-api
+          - name: severity
+            value: critical
+        groupBy: [alertname, service]
+        groupWait: 30s
+        groupInterval: 5m
+        repeatInterval: 4h
+  receivers:
+    - name: none
+    - name: slack-escalations
+      slackConfigs:
+        - apiURL:
+            name: alertmanager-slack
+            key: webhook-url
+          # Resolution only means the Job aged out after 24h; not news.
+          sendResolved: false
+          title: '{{ .CommonLabels.alertname }}: {{ .CommonLabels.service }}'
+          text: &text |-
+            {{ range .Alerts }}*{{ .Annotations.summary }}*
+            {{ .Annotations.description }}
+            {{ if .Annotations.audit }}Audit record: `{{ .Annotations.audit }}`
+            {{ end }}{{ if .Annotations.dashboard }}Dashboard: `{{ .Annotations.dashboard }}`
+            {{ end }}{{ end }}
+    - name: slack-incidents
+      slackConfigs:
+        - apiURL:
+            name: alertmanager-slack
+            key: webhook-url
+          sendResolved: true
+          title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}: {{ .CommonLabels.service }} (the SRE agent is investigating)'
+          text: *text

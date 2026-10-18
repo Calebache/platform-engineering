@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -36,6 +37,7 @@ const (
 	labelIncidentKey = "sre.calebache.com/incident-key"
 	annService       = "sre.calebache.com/service"
 	annAlert         = "sre.calebache.com/alert"
+	annIncidentID    = "sre.calebache.com/incident-id"
 )
 
 type orchestratorConfig struct {
@@ -59,6 +61,7 @@ type orchMetrics struct {
 	alerts    *prometheus.CounterVec
 	decisions *prometheus.CounterVec
 	incidents *prometheus.GaugeVec
+	info      *prometheus.GaugeVec
 	active    prometheus.Gauge
 }
 
@@ -74,11 +77,16 @@ func newOrchMetrics() *orchMetrics {
 		incidents: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "sre_agent_incidents", Help: "Incident Jobs that finished in the last 24h, by service and outcome.",
 		}, []string{"service", "outcome"}),
+		// One series per incident so an alert can name it. Bounded: Jobs live
+		// 24h and the cooldown allows a few per service and alert per hour.
+		info: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "sre_agent_incident_info", Help: "Always 1: one series per incident Job that finished in the last 24h.",
+		}, []string{"service", "alert", "outcome", "incident_id", "hypothesis"}),
 		active: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "sre_agent_active_investigations", Help: "Incident Jobs currently running.",
 		}),
 	}
-	m.registry.MustRegister(m.alerts, m.decisions, m.incidents, m.active)
+	m.registry.MustRegister(m.alerts, m.decisions, m.incidents, m.info, m.active)
 	return m
 }
 
@@ -234,7 +242,7 @@ func (o *orchestrator) buildJob(service, alert, key string) *batchv1.Job {
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: o.cfg.namespace, Labels: labels,
-			Annotations: map[string]string{annService: service, annAlert: alert, "sre.calebache.com/incident-id": id},
+			Annotations: map[string]string{annService: service, annAlert: alert, annIncidentID: id},
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &zero, // an incident is never silently retried
@@ -314,6 +322,7 @@ func (o *orchestrator) reconcile(ctx context.Context) {
 	}
 	counts := map[[2]string]float64{}
 	active := 0
+	o.metrics.info.Reset()
 	for _, j := range jobs.Items {
 		if !jobFinished(&j) {
 			active++
@@ -322,7 +331,10 @@ func (o *orchestrator) reconcile(ctx context.Context) {
 		if o.now().Sub(j.CreationTimestamp.Time) > 24*time.Hour {
 			continue
 		}
-		counts[[2]string{j.Annotations[annService], o.outcome(ctx, &j)}]++
+		outcome, hypothesis := o.termination(ctx, &j)
+		counts[[2]string{j.Annotations[annService], outcome}]++
+		o.metrics.info.WithLabelValues(j.Annotations[annService], j.Annotations[annAlert], outcome,
+			j.Annotations[annIncidentID], labelText(hypothesis, 200)).Set(1)
 	}
 	o.metrics.incidents.Reset()
 	keys := make([][2]string, 0, len(counts))
@@ -337,26 +349,55 @@ func (o *orchestrator) reconcile(ctx context.Context) {
 }
 
 func (o *orchestrator) outcome(ctx context.Context, j *batchv1.Job) string {
+	outcome, _ := o.termination(ctx, j)
+	return outcome
+}
+
+// termination returns the outcome and hypothesis a worker left in its
+// termination message.
+func (o *orchestrator) termination(ctx context.Context, j *batchv1.Job) (outcome, hypothesis string) {
 	for _, c := range j.Status.Conditions {
 		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue && c.Reason == "DeadlineExceeded" {
-			return "deadline_exceeded"
+			return "deadline_exceeded", ""
 		}
 	}
 	pods, err := o.kube.CoreV1().Pods(o.cfg.namespace).List(ctx, metav1.ListOptions{LabelSelector: "job-name=" + j.Name})
 	if err != nil {
-		return "unknown"
+		return "unknown", ""
 	}
 	for _, p := range pods.Items {
 		for _, cs := range p.Status.ContainerStatuses {
 			if term := cs.State.Terminated; term != nil && term.Message != "" {
 				var m struct {
-					Outcome string `json:"outcome"`
+					Outcome    string `json:"outcome"`
+					Hypothesis string `json:"hypothesis"`
 				}
 				if json.Unmarshal([]byte(term.Message), &m) == nil && m.Outcome != "" {
-					return m.Outcome
+					return m.Outcome, m.Hypothesis
 				}
 			}
 		}
 	}
-	return "unknown"
+	return "unknown", ""
+}
+
+// labelText makes model-written text safe for a label that ends up in a chat
+// notification: one line, at most n runes, and no <, > or & (Slack reads
+// <!channel> and <url|text> as markup).
+func labelText(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', '&':
+			return -1
+		}
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n-1]) + "…"
+	}
+	return s
 }
