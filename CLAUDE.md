@@ -30,8 +30,10 @@ Terraform follows a **root module + one module per resource type + per-environme
   - `ci.yml` (PRs, plus dispatch) runs:
     - **Go:** gofmt, `go mod tidy -diff`, vet and `test -race` per app.
     - **Terraform:** fmt, validate and TFLint (`terraform/.tflint.hcl`).
-    - **Scanners:** Trivy misconfig and Go-dependency scans (`.trivyignore.yaml`), Checkov (`.checkov.yaml`). **Every exception is scoped and has a reason.**
-    - **Policy:** Conftest on every `gitops/` manifest, and a check that `policy/examples/privileged-pod.yaml` **is rejected**.
+    - **Scanners:** Trivy misconfig and Go-dependency scans (`.trivyignore.yaml`), Checkov (`.checkov.yaml`). **Every exception is scoped and has a reason.** Trivy is 0.75.0 with `--skip-check-update`, so it uses the checks built into that binary. Two failures led to this. 0.58 couldn't parse Terraform `ephemeral` blocks and **silently skipped `main.tf`** while the job passed. The newest downloaded checks bundle didn't compile on the older engine (`rego_type_error`). The one "Falling back to embedded checks" log line is expected. Trivy skips `policy/`, whose test manifests are bad on purpose.
+    - **Policy:**
+      - **Workloads:** `gator verify policy/gatekeeper` (the policies' tests), then `gator test` on every manifest in `gitops/workloads`, `gitops/platform` and `gitops/policies`, plus a check that `policy/examples/privileged-pod.yaml` **is rejected**.
+      - **Secrets:** Conftest, for the no-Secrets-in-Git rule only.
     - **Lint:** promtool, actionlint, shellcheck.
     - **Plan:** an owner-only `terraform plan` when `terraform/` changed, plus Infracost if the `INFRACOST_API_KEY` secret is set.
   - `images.yml` (merges to `main` that change `apps/`, or dispatch) builds, scans and pushes the changed apps with `build-push.sh`. It then opens a `ci/pin-images-<tag>` PR and dispatches `ci.yml` on it, because PRs opened with `GITHUB_TOKEN` don't trigger workflows. **Merging the pin PR is the deploy approval.**
@@ -39,10 +41,23 @@ Terraform follows a **root module + one module per resource type + per-environme
   - **Every workflow sets `defaults.run.shell: bash`.** GitHub's implicit shell is `bash -e` **without pipefail**. Once, `$(build-push.sh | tail -1)` hid a failed Trivy scan, and the pin PR pinned tags that were never pushed. Keep the default, and keep `build-push.sh`'s stdout for the image reference only.
   - `environment.yml` (dispatch only) runs `create-env.sh` (up) or `destroy-env.sh` (down) with `-auto-approve`, as the deployer role. Down needs the env name typed into `confirm`.
   - **Owner gate.** Every job that holds AWS credentials or writes to the repo runs `scripts/ci/require-owner.sh`: `GITHUB_ACTOR`, `GITHUB_TRIGGERING_ACTOR` and, on PRs, the PR author must be `Calebache`. It's a convention, not GitHub-enforced (see the Known gap). Read-only checks run for everyone, so the agent's PRs are still validated.
-- `policy/kubernetes/*.rego` is the Conftest policy (rego v1), with tests in `workloads_test.rego` (`conftest verify`). It requires:
-  - **Pod security:** no privileged containers, `allowPrivilegeEscalation: false`, all capabilities dropped, non-root, no host namespaces or hostPath.
-  - **Pinned images** (a tag that isn't `latest`, or a digest) and memory requests and limits.
-  - **No Secrets in Git** except credential-free Argo CD repo entries.
+- **Policy (OPA) has one source per rule.**
+  - **Workload rules** are Gatekeeper ConstraintTemplates in `gitops/policies/dev/`. **Gatekeeper enforces them at admission, and CI runs the same files with gator**, so the two layers can't disagree.
+    - `K8sPlatformPodSecurity`: no privileged containers, `allowPrivilegeEscalation: false`, all capabilities dropped (only `NET_BIND_SERVICE` may be added), non-root, no host namespaces or hostPath.
+    - `K8sPlatformContainerBasics`: pinned images (a tag that isn't `latest`, or a digest) and memory requests and limits.
+  - **Constraints:**
+    - **`deny`** in `payment-api`, `mcp-server` and `sre-agent`, on Pods and on Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs and CronJobs. A bad sync fails visibly, and agent Jobs' Pods can't get around it.
+    - **`dryrun`** cluster-wide for pod security (`pod-security-audit`). Platform charts that need host access keep working, and their violations show in `status.totalViolations`.
+  - **Tests:** `policy/gatekeeper/suite.yaml`, with cases in `cases/`. A new rule needs a template, a constraint and suite cases in the same change.
+  - **Anything `create-env.sh` or the orchestrator launches** in those namespaces must comply, memory limits included; the check pods in `run_as_agent` do.
+  - **The no-Secrets-in-Git rule** stays in Conftest (`policy/kubernetes/secrets.rego` + `secrets_test.rego`), because it's a Git rule. In the cluster, External Secrets creates Secrets legitimately.
+- **Gatekeeper** (`gitops/apps/dev/gatekeeper.yaml`, chart 3.23.1, wave -1) is set up so it can't become the cluster-wide webhook outage described below.
+  - **Both** validating webhooks **fail open** (`Ignore`, 3 s). That includes the namespace-label webhook, which fails closed by default, and would block Argo CD from creating namespaces while Gatekeeper is down. CI is the layer that always enforces.
+  - **No mutation, no Helm hooks:** Argo CD applies the CRDs and the namespace, labelled `admission.gatekeeper.sh/ignore` and restricted.
+  - **Self-rotated certificate:** Gatekeeper rotates its own webhook cert, so the Application ignores the `caBundle` and the cert Secret's data (`RespectIgnoreDifferences`).
+  - **Sizing:** one replica, with PDB `minAvailable: 0` so drains and scale-down aren't blocked.
+  - **Policies Application:** `gatekeeper-policies` (wave 0) syncs templates (wave 0) before constraints (wave 1, `SkipDryRunOnMissingResource`).
+  - **Demo:** `kubectl apply --dry-run=server -f policy/examples/privileged-pod.yaml` is denied by `workload-pod-security`.
 - `gitops/apps/<env>/` is what the root Application syncs: one Argo CD `Application` per component, plus the `platform` AppProject and the Envoy OCI repo Secret. Each Application needs `project: platform`, a sync-wave annotation and the `resources-finalizer.argocd.argoproj.io` finalizer. The AppProject's `sourceRepos` is an allow-list, so add a new chart repo in the same change as its Application.
 - `gitops/platform/<env>/` holds cluster-wide config, synced by the `platform-config` Application: ClusterIssuers, the EnvoyProxy/GatewayClass, the `public` Gateway and the HTTP→HTTPS redirect.
 - `apps/<name>/` holds the Go services, each its own module with a `Dockerfile` (static binary on distroless, non-root). `gitops/workloads/<env>/<name>/` holds their manifests, deployed by a wave-2 Application in `gitops/apps/<env>/`.
@@ -55,8 +70,8 @@ Sync waves (child Application health is enabled through a Lua check in the `argo
 |---|---|
 | -3 | `platform` AppProject, Envoy OCI repo Secret |
 | -2 | Envoy Gateway (installs the Gateway API CRDs), kube-prometheus-stack (installs the ServiceMonitor/PodMonitor/PrometheusRule CRDs) |
-| -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source), External Secrets, cluster-autoscaler (ships a ServiceMonitor) |
-| 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager) |
+| -1 | cert-manager (needs the Gateway API CRDs for `enableGatewayAPI`), external-dns (`gateway-httproute` source), External Secrets, cluster-autoscaler (ships a ServiceMonitor), Gatekeeper |
+| 0 | AWS Load Balancer Controller (its webhook cert comes from cert-manager), `gatekeeper-policies` (before the workloads they guard) |
 | 1 | `platform-config` (ClusterIssuers, GatewayClass, Gateway). `destroy-env.sh` waits for the NLB and DNS records to be gone after removing this wave. |
 | 2 | Workloads: payment-api, mcp-server, sre-agent. Each Application ships its own ServiceMonitor and PrometheusRule, and an HTTPRoute if it's public. |
 
@@ -201,7 +216,10 @@ The PoC's purpose is to show that an AI SRE agent can investigate incidents and 
 - **GitHub:** `Calebache/platform-engineering` (https://github.com/Calebache/platform-engineering). Scope OIDC trust policies to this repo.
 - **DNS:** `calebache.com`, hosted in Route53. external-dns and cert-manager use it.
 - **Language:** Go for the MCP server, the SRE agent and `payment-api`.
-- **OPA:** enforced in CI only, via Conftest. No in-cluster Gatekeeper.
+- **OPA** runs at three levels:
+  - **Runtime authorization:** the MCP server's embedded policy decides every agent request.
+  - **Admission:** Gatekeeper enforces the workload rules (added 2026-10-19; this replaces the earlier "CI only, no Gatekeeper" decision).
+  - **CI:** gator runs the same Gatekeeper policies, and Conftest the no-Secrets-in-Git rule.
 - **Audit trail:** stored in S3.
 - **Agent LLM:** **Claude Opus 4.6** on Amazon Bedrock, through `bedrock-runtime` (InvokeModel) and the global inference profile `global.anthropic.claude-opus-4-6-v1`. The plan was Opus 5.5 through Bedrock's Mantle Messages endpoint. As of 2026-10-17, though, this account gets "not available for this account" for **every** model on Mantle, and for Opus 4.7, 4.8, 5 and 5.5 and Sonnet 5 on `bedrock-runtime` too. Opus 4.6, Sonnet 4.6, Sonnet 4.5 and Haiku 4.5 work. Unlocking the newer models is an AWS account matter. To move up later, change `bedrock_inference_profile`, `bedrock_foundation_model` and `WORKER_MODEL_ID` together; for Mantle-only models, also switch the client back to `bedrock.NewMantleClient` and the IAM action to `bedrock-mantle:CreateInference`.
 - **Bedrock client and IAM.** The Go client is `anthropic.NewClient(bedrock.WithConfig(cfg))` from `github.com/anthropics/anthropic-sdk-go`, with the region from `BEDROCK_REGION` (never `AWS_REGION`); it speaks the Messages API, so the tool loop is the same. Opus 4.6 needs adaptive thinking set **explicitly** (`OfAdaptive`), unlike 5.x. The agent role allows `bedrock:InvokeModel` on **only** that inference profile, plus the foundation model in any region **only through that profile** (`bedrock:InferenceProfileArn` condition). Calling any other model, even one the account can use, is `AccessDenied`, and `whoami` checks this.
@@ -216,7 +234,7 @@ The PoC's purpose is to show that an AI SRE agent can investigate incidents and 
 - **Argo CD owns all steady-state Kubernetes resources**, through App-of-Apps: Envoy Gateway (Gateway API), the AWS Load Balancer Controller, cluster-autoscaler, cert-manager, external-dns, observability (Prometheus, Grafana, optional Loki), the MCP server, the agent runtime and the demo app. The sync-wave table above is the source of truth for ordering.
 - **GitHub Actions** handles CI/CD and authenticates to AWS **only through OIDC**, never with static keys. Trust policies are scoped to one workflow file on one ref (see `bootstrap-ci.sh`). Each duty gets its own role (`terraform-deployer-role`, `image-builder-role`, `agent-runtime-role`, `external-dns-role`). The Terraform deployer identity must never be reused by workloads.
 - **Images** go in ECR repos `mcp-server`, `sre-agent` and `payment-api`, one repo per app, named after its `apps/` directory. Tags are the Git commit SHA, ideally immutable, and never `latest`. Images are scanned in CI and deployed via Argo CD.
-- **PR validation** covers formatting, linting, unit tests, `terraform validate`/`plan`, TFLint, Trivy, Checkov, OPA/Conftest and Infracost. Privileged changes need a human approval gate.
+- **PR validation** covers formatting, linting, unit tests, `terraform validate`/`plan`, TFLint, Trivy, Checkov, OPA (gator and Conftest) and Infracost. Privileged changes need a human approval gate.
 - **MCP server** is the agent's governed tool gateway. Example tools: `get_service_health`, `get_recent_logs`, `get_error_patterns`, `get_recent_deployments`, `get_git_changes`, `get_metrics`, `get_incident_context`, `create_pull_request`. It enforces authorization itself, never through the LLM. It also does context engineering: it returns grouped, deduplicated summaries first, with progressively deeper evidence on request. Raw data must stay reachable.
 - **Agent runtime** runs on Kubernetes: an orchestrator service, Jobs, CronJobs and ephemeral Jobs. Permissions are mostly read-only, plus creating PRs. The agent must never modify IAM, delete infrastructure, patch production directly, push to main or bypass GitOps. A denied direct mutation should return `{"allowed": false, "reason": ..., "required_path": "create_pull_request"}`.
 - **Demo app** is `payment-api`. Its deliberate failure is a wrong `DATABASE_HOST` that causes HTTP 500s. Prometheus detects the failure and starts the incident flow. After Argo CD deploys the fix, the agent must check that the service actually recovered (5xx rate, readiness, error logs) before the incident counts as resolved.
@@ -227,7 +245,7 @@ The PoC's purpose is to show that an AI SRE agent can investigate incidents and 
 These must stay demonstrable, so don't "fix" them away:
 - The agent's direct production patch is denied.
 - An AWS call outside the agent's IAM scope returns `AccessDenied` (prove the identity with `aws sts get-caller-identity`).
-- A manifest with `securityContext.privileged: true` fails the OPA check.
+- A manifest with `securityContext.privileged: true` fails the OPA check, in CI (gator) and at admission (Gatekeeper).
 
 ## Environment lifecycle
 

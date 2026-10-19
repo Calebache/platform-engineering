@@ -22,3 +22,6 @@ apps/*/payment-api
 apps/*/sre-agent
 *.test
 .rules.*/
+
+# Local git worktrees (parallel work)
+.claude/worktrees/

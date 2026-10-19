@@ -1,0 +1,49 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "demo",
+    "namespace": "payment-api"
+  },
+  "spec": {
+    "selector": {
+      "matchLabels": {
+        "app": "demo"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "demo"
+        }
+      },
+      "spec": {
+        "securityContext": {
+          "runAsNonRoot": true
+        },
+        "containers": [
+          {
+            "name": "app",
+            "image": "nginx",
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "resources": {
+              "requests": {
+                "memory": "64Mi"
+              },
+              "limits": {
+                "memory": "128Mi"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

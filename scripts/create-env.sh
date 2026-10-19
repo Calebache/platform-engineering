@@ -145,6 +145,8 @@ AGENT_IMAGE="$(image_of sre-agent sre-agent/orchestrator.yaml)"
 MODEL_ID="$(grep -A1 'name: WORKER_MODEL_ID' "$GITOPS/sre-agent/orchestrator.yaml" | awk '/value:/ {print $2}')"
 BEDROCK_REGION="$(grep -A1 'name: WORKER_BEDROCK_REGION' "$GITOPS/sre-agent/orchestrator.yaml" | awk '/value:/ {print $2}')"
 
+# The pod must pass the Gatekeeper constraints on the sre-agent namespace
+# (restricted security context, memory requests and limits).
 run_as_agent() { # name image args-json env-json token-volume(true|false)
   local name="$1" image="$2" args="$3" env="$4" token="$5" mounts="" volumes=""
   if [[ "$token" == true ]]; then
@@ -155,6 +157,7 @@ run_as_agent() { # name image args-json env-json token-volume(true|false)
     "spec":{"serviceAccountName":"sre-agent","automountServiceAccountToken":false,
      "securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
      "containers":[{"name":"c","image":"'"$image"'","args":'"$args"',"env":'"$env"',
+       "resources":{"requests":{"memory":"64Mi"},"limits":{"memory":"128Mi"}},
        "securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}'"$mounts"'}]'"$volumes"'}}'
 }
 

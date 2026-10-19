@@ -1,0 +1,35 @@
+# Gatekeeper's ConstraintTemplates and constraints (gitops/policies/dev).
+# Wave 0: after Gatekeeper itself (-1), before the workloads it guards (2).
+# Inside the app, templates sync before constraints (waves 0 and 1), and
+# Argo CD's built-in health checks wait until Gatekeeper reports each one
+# created and enforced.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gatekeeper-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/Calebache/platform-engineering.git
+    targetRevision: main
+    path: gitops/policies/dev
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # Argo CD doesn't retry a failed automated sync for the same commit on
+    # its own; on a fresh cluster transient failures (a CRD or webhook not
+    # ready yet) would otherwise leave the app stuck.
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m

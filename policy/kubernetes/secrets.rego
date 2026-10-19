@@ -1,6 +1,8 @@
-# Secrets reach the cluster only through External Secrets (Secrets Manager is
-# the source of truth), so a Secret in Git is almost always a leaked
-# credential. The one exception is an Argo CD repository entry that carries
+# Conftest, CI only: a Git rule, not an admission rule. Secrets reach the
+# cluster only through External Secrets (Secrets Manager is the source of
+# truth), so a Secret in Git is almost always a leaked credential. (Workload
+# rules are Gatekeeper ConstraintTemplates in gitops/policies/dev, enforced
+# at admission and tested in CI with gator.) The one exception is an Argo CD repository entry that carries
 # no credential at all (e.g. the public Envoy Gateway OCI registry).
 package main
 

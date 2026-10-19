@@ -1,0 +1,19 @@
+# Enforced: pinned images and memory requests/limits in the workload namespaces.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPlatformContainerBasics
+metadata:
+  name: workload-container-basics
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    namespaces: ["payment-api", "mcp-server", "sre-agent"]

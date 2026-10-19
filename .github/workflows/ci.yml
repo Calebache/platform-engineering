@@ -30,7 +30,8 @@ env:
   AWS_REGION: ca-central-1
   AWS_ACCOUNT_ID: "103544553431"
   CONFTEST_IMAGE: openpolicyagent/conftest@sha256:9204b38318a7b4be4e49403d81a6c53ed81a99d0c3dd770a216a65edb9a412c7 # v0.56.0
-  TRIVY_IMAGE: aquasec/trivy@sha256:665030f4d33a82c1e8d9d5e0453365842236723c1ee5cc3becca698268e66a56 # 0.58.2
+  GATOR_IMAGE: openpolicyagent/gator@sha256:63462f0ab3d207b4bf0872f771d6e63fed5664b8837201aeb87d4ee3a5c9d754 # v3.23.1, matches the Gatekeeper chart
+  TRIVY_IMAGE: aquasec/trivy@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa # 0.75.0
   CHECKOV_IMAGE: bridgecrew/checkov@sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e # 3.2.334
   PROMETHEUS_IMAGE: prom/prometheus@sha256:6927e0919a144aa7616fd0137d4816816d42f6b816de3af269ab065250859a62 # v3.2.1
   ACTIONLINT_IMAGE: rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 # 1.7.7
@@ -103,11 +104,16 @@ jobs:
         with:
           persist-credentials: false
       # Exceptions live in .trivyignore.yaml and .checkov.yaml, each with its reason.
+      # --skip-check-update: use the checks built into this Trivy version
+      # instead of downloading the newest bundle at run time. A bundle newer
+      # than the engine fails to compile (rego_type_error), and 0.58 couldn't
+      # parse Terraform `ephemeral` blocks, so main.tf went unscanned while
+      # the job passed. Expect one "Falling back to embedded checks" log line.
       - name: trivy (misconfiguration)
         run: >-
           docker run --rm -v "$PWD:/src" -w /src "$TRIVY_IMAGE"
-          config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore.yaml
-          --skip-dirs policy/examples .
+          config --skip-check-update --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore.yaml
+          --skip-dirs policy .
       - name: trivy (Go dependencies)
         run: >-
           docker run --rm -v "$PWD:/src" -w /src "$TRIVY_IMAGE"
@@ -121,20 +127,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: conftest verify (the policy's own tests)
-        run: docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" verify --policy policy/kubernetes
-      - name: conftest test (every manifest in gitops/)
-        run: |
-          mapfile -t files < <(git ls-files 'gitops/*.yaml')
-          docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" test --policy policy/kubernetes "${files[@]}"
+      # Workload rules: the Gatekeeper ConstraintTemplates the cluster
+      # enforces (gitops/policies/dev), run here with gator, so CI and
+      # admission can't disagree.
+      - name: gator verify (the policies' own tests)
+        run: docker run --rm -v "$PWD:/w" -w /w "$GATOR_IMAGE" verify -v policy/gatekeeper
+      - name: gator test (every manifest in gitops/)
+        run: >-
+          docker run --rm -v "$PWD:/w" -w /w "$GATOR_IMAGE"
+          test -f gitops/policies/dev -f gitops/workloads/dev -f gitops/platform/dev
       # The intentional-failure demo must keep failing; if it passes, the
       # policy stopped enforcing.
       - name: privileged manifest is rejected
         run: |
-          if docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" test --policy policy/kubernetes policy/examples/privileged-pod.yaml; then
+          if docker run --rm -v "$PWD:/w" -w /w "$GATOR_IMAGE" test -f gitops/policies/dev -f policy/examples/privileged-pod.yaml; then
             echo "::error::policy/examples/privileged-pod.yaml passed the policy; it must be denied"
             exit 1
           fi
+      # Git-only rule: no Secrets in the repository (Conftest).
+      - name: conftest (no Secrets in Git)
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" verify --policy policy/kubernetes
+          mapfile -t files < <(git ls-files 'gitops/*.yaml')
+          docker run --rm -v "$PWD:/project" -w /project "$CONFTEST_IMAGE" test --policy policy/kubernetes "${files[@]}"
       - name: promtool check rules
         env:
           PROMTOOL: docker run --rm -v ${{ github.workspace }}:/w -w /w --entrypoint promtool ${{ env.PROMETHEUS_IMAGE }}
