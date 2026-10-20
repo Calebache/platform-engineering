@@ -1,0 +1,57 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "demo",
+    "namespace": "payment-api"
+  },
+  "spec": {
+    "selector": {
+      "matchLabels": {
+        "app": "demo"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "demo"
+        }
+      },
+      "spec": {
+        "securityContext": {
+          "runAsNonRoot": true
+        },
+        "containers": [
+          {
+            "name": "app",
+            "image": "103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:66b2f83008a0",
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "resources": {
+              "requests": {
+                "memory": "64Mi"
+              },
+              "limits": {
+                "memory": "128Mi"
+              }
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "h",
+            "hostPath": {
+              "path": "/"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

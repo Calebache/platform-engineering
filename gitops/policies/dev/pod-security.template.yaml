@@ -1,0 +1,90 @@
+# Pod security for platform workloads: no privilege, no escalation, all
+# capabilities dropped, non-root, no host namespaces or host paths.
+#
+# One source for both layers: Gatekeeper enforces it at admission, and CI
+# runs it against every manifest with gator (policy/gatekeeper). Checks the
+# workload objects Argo CD applies (so a bad sync fails visibly) and the Pods
+# they create (so nothing gets around it, e.g. the SRE agent's Jobs).
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8splatformpodsecurity
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    description: Restricted pod security for platform workloads.
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sPlatformPodSecurity
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8splatformpodsecurity
+
+        import future.keywords.in
+
+        workload_kinds := {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
+
+        obj := input.review.object
+
+        pod_spec := obj.spec { obj.kind == "Pod" }
+        pod_spec := obj.spec.template.spec { obj.kind in workload_kinds }
+        pod_spec := obj.spec.jobTemplate.spec.template.spec { obj.kind == "CronJob" }
+
+        containers[c] { some c in pod_spec.containers }
+        containers[c] { some c in pod_spec.initContainers }
+        containers[c] { some c in pod_spec.ephemeralContainers }
+
+        # Pods from Jobs and ReplicaSets only have generateName at admission.
+        name := sprintf("%v/%v", [obj.kind, object.get(obj.metadata, "name", object.get(obj.metadata, "generateName", "?"))])
+
+        violation[{"msg": msg}] {
+          some c in containers
+          c.securityContext.privileged == true
+          msg := sprintf("%v: container %q sets securityContext.privileged: true; privileged containers are never allowed", [name, c.name])
+        }
+
+        violation[{"msg": msg}] {
+          some c in containers
+          not c.securityContext.allowPrivilegeEscalation == false
+          msg := sprintf("%v: container %q must set securityContext.allowPrivilegeEscalation: false", [name, c.name])
+        }
+
+        violation[{"msg": msg}] {
+          some c in containers
+          not "ALL" in object.get(c, ["securityContext", "capabilities", "drop"], [])
+          msg := sprintf("%v: container %q must drop all capabilities (securityContext.capabilities.drop: [\"ALL\"])", [name, c.name])
+        }
+
+        violation[{"msg": msg}] {
+          some c in containers
+          some cap in object.get(c, ["securityContext", "capabilities", "add"], [])
+          cap != "NET_BIND_SERVICE"
+          msg := sprintf("%v: container %q adds capability %v", [name, c.name, cap])
+        }
+
+        violation[{"msg": msg}] {
+          some c in containers
+          not runs_as_non_root(c)
+          msg := sprintf("%v: container %q must run as non-root (runAsNonRoot: true on the pod or container)", [name, c.name])
+        }
+
+        runs_as_non_root(c) { c.securityContext.runAsNonRoot == true }
+
+        runs_as_non_root(c) {
+          pod_spec.securityContext.runAsNonRoot == true
+          not c.securityContext.runAsNonRoot == false
+        }
+
+        violation[{"msg": msg}] {
+          some field in ["hostNetwork", "hostPID", "hostIPC"]
+          pod_spec[field] == true
+          msg := sprintf("%v: %v: true is not allowed", [name, field])
+        }
+
+        violation[{"msg": msg}] {
+          some v in pod_spec.volumes
+          v.hostPath
+          msg := sprintf("%v: volume %q mounts a hostPath", [name, v.name])
+        }

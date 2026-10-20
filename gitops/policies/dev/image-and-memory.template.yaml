@@ -1,0 +1,58 @@
+# Every container's image is pinned (a tag that isn't `latest`, or a digest)
+# and its memory is bounded (requests and limits). Pinned images are what
+# make a rebuilt environment run exactly what Git says; memory limits keep
+# one workload from starving the two small nodes.
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8splatformcontainerbasics
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    description: Pinned images and memory requests/limits for platform workloads.
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sPlatformContainerBasics
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8splatformcontainerbasics
+
+        import future.keywords.in
+
+        workload_kinds := {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
+
+        obj := input.review.object
+
+        pod_spec := obj.spec { obj.kind == "Pod" }
+        pod_spec := obj.spec.template.spec { obj.kind in workload_kinds }
+        pod_spec := obj.spec.jobTemplate.spec.template.spec { obj.kind == "CronJob" }
+
+        containers[c] { some c in pod_spec.containers }
+        containers[c] { some c in pod_spec.initContainers }
+
+        name := sprintf("%v/%v", [obj.kind, object.get(obj.metadata, "name", object.get(obj.metadata, "generateName", "?"))])
+
+        violation[{"msg": msg}] {
+          some c in containers
+          not pinned(c.image)
+          msg := sprintf("%v: container %q image %q must be pinned to a tag (not latest) or a digest", [name, c.name, c.image])
+        }
+
+        pinned(image) { contains(image, "@sha256:") }
+
+        pinned(image) {
+          not contains(image, "@")
+          parts := split(image, "/")
+          last := parts[count(parts) - 1]
+          contains(last, ":")
+          not endswith(last, ":latest")
+        }
+
+        violation[{"msg": msg}] {
+          some c in containers
+          some field in ["requests", "limits"]
+          not c.resources[field].memory
+          msg := sprintf("%v: container %q must set resources.%v.memory", [name, c.name, field])
+        }

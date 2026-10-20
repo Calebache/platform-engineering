@@ -1,0 +1,18 @@
+# Audit only (dryrun): the same pod security rules everywhere else. Platform
+# charts that legitimately need host access (node-exporter, the VPC CNI) keep
+# working, and their deviations stay visible:
+#   kubectl get k8splatformpodsecurity pod-security-audit -o jsonpath='{.status.totalViolations}'
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPlatformPodSecurity
+metadata:
+  name: pod-security-audit
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    excludedNamespaces: ["payment-api", "mcp-server", "sre-agent", "gatekeeper-system"]

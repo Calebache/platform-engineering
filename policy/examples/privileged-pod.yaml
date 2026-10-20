@@ -1,11 +1,15 @@
 # Intentional failure demo (doc.md §21): this manifest must fail the OPA
-# check. It lives outside gitops/, so nothing ever deploys it.
+# check, in CI (gator) and at admission (Gatekeeper). It lives outside
+# gitops/, so nothing ever deploys it.
 #
-#   conftest test --policy policy/kubernetes policy/examples/privileged-pod.yaml
+#   gator test -f gitops/policies/dev -f policy/examples/privileged-pod.yaml
+#   kubectl apply --dry-run=server -f policy/examples/privileged-pod.yaml   # denied by Gatekeeper
 apiVersion: v1
 kind: Pod
 metadata:
   name: privileged-demo
+  # A namespace the enforcing constraints cover.
+  namespace: payment-api
 spec:
   securityContext:
     runAsNonRoot: true

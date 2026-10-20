@@ -1,0 +1,71 @@
+# Tests for the Gatekeeper policies in gitops/policies/dev, the same files
+# the cluster enforces. Run with gator (CI's policy job):
+#   gator verify policy/gatekeeper
+kind: Suite
+apiVersion: test.gatekeeper.sh/v1alpha1
+metadata:
+  name: platform-policies
+tests:
+  - name: pod-security
+    template: ../../gitops/policies/dev/pod-security.template.yaml
+    constraint: ../../gitops/policies/dev/workload-pod-security.constraint.yaml
+    cases:
+      - name: compliant deployment passes
+        object: cases/good-deployment.yaml
+        assertions: [{violations: no}]
+      # The intentional-failure demo (doc.md §21).
+      - name: privileged pod is denied
+        object: ../examples/privileged-pod.yaml
+        assertions: [{violations: yes, message: "privileged: true"}]
+      - name: unset allowPrivilegeEscalation is denied
+        object: cases/escalation-unset.yaml
+        assertions: [{violations: yes, message: allowPrivilegeEscalation}]
+      - name: root is denied
+        object: cases/root.yaml
+        assertions: [{violations: yes, message: non-root}]
+      - name: a container can't opt out of non-root
+        object: cases/container-overrides-non-root.yaml
+        assertions: [{violations: yes, message: non-root}]
+      - name: hostNetwork is denied
+        object: cases/host-network.yaml
+        assertions: [{violations: yes, message: hostNetwork}]
+      - name: hostPath is denied
+        object: cases/host-path.yaml
+        assertions: [{violations: yes, message: hostPath}]
+      - name: added capabilities are denied
+        object: cases/added-capability.yaml
+        assertions: [{violations: yes, message: SYS_ADMIN}]
+      - name: CronJob pod templates are checked
+        object: cases/cronjob-privileged.yaml
+        assertions: [{violations: yes, message: privileged}]
+      - name: a Job's pod (generateName only) is checked by name
+        object: cases/job-pod-generate-name.yaml
+        assertions: [{violations: no}]
+      - name: other namespaces aren't enforced
+        object: cases/privileged-in-other-namespace.yaml
+        assertions: [{violations: no}]
+  - name: container-basics
+    template: ../../gitops/policies/dev/image-and-memory.template.yaml
+    constraint: ../../gitops/policies/dev/workload-container-basics.constraint.yaml
+    cases:
+      - name: compliant deployment passes
+        object: cases/good-deployment.yaml
+        assertions: [{violations: no}]
+      - name: latest is denied
+        object: cases/image-latest.yaml
+        assertions: [{violations: yes, message: must be pinned}]
+      - name: untagged is denied
+        object: cases/image-untagged.yaml
+        assertions: [{violations: yes, message: must be pinned}]
+      - name: a registry port isn't a tag
+        object: cases/image-registry-port-untagged.yaml
+        assertions: [{violations: yes, message: must be pinned}]
+      - name: a digest is pinned
+        object: cases/image-digest.yaml
+        assertions: [{violations: no}]
+      - name: a tag after a registry port is pinned
+        object: cases/image-registry-port-tagged.yaml
+        assertions: [{violations: no}]
+      - name: a missing memory limit is denied
+        object: cases/no-memory-limit.yaml
+        assertions: [{violations: 1, message: resources.limits.memory}]

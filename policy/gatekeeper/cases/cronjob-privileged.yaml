@@ -1,0 +1,46 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "CronJob",
+  "metadata": {
+    "name": "demo",
+    "namespace": "sre-agent"
+  },
+  "spec": {
+    "schedule": "* * * * *",
+    "jobTemplate": {
+      "spec": {
+        "template": {
+          "spec": {
+            "securityContext": {
+              "runAsNonRoot": true
+            },
+            "restartPolicy": "Never",
+            "containers": [
+              {
+                "name": "app",
+                "image": "103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:66b2f83008a0",
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "privileged": true
+                },
+                "resources": {
+                  "requests": {
+                    "memory": "64Mi"
+                  },
+                  "limits": {
+                    "memory": "128Mi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

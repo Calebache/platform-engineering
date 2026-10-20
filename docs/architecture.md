@@ -171,6 +171,19 @@ and logs every decision.
 - Its own permissions: read-only RBAC without Secrets, no AWS role, and the
   GitHub App above.
 
+## Policy (OPA)
+
+OPA decides at three points, each with one source of truth:
+
+| Where | Policy | Decides |
+|---|---|---|
+| MCP server, every request | `apps/mcp-server/policy/mcp.rego` | What the agent may read and change (fails closed) |
+| Admission, Gatekeeper | `gitops/policies/dev` (ConstraintTemplates) | Pod security, pinned images, memory limits in the workload namespaces (deny); pod security elsewhere (audit only) |
+| CI, gator and Conftest | the same Gatekeeper files; `policy/kubernetes/secrets.rego` | Every manifest before merge; no Secrets in Git |
+
+Gatekeeper's webhooks fail open, so a Gatekeeper outage never blocks the
+cluster; CI is the layer that always enforces.
+
 ## CI/CD
 
 GitHub Actions authenticates to AWS only through OIDC; no static key is
@@ -180,7 +193,7 @@ environment is down.
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `ci.yml` | Every PR (the agent's included) | Go fmt/vet/test, Terraform fmt/validate/TFLint, Trivy, Checkov, Conftest, promtool, actionlint, shellcheck; owner-only `terraform plan` (+ Infracost) when `terraform/` changed |
+| `ci.yml` | Every PR (the agent's included) | Go fmt/vet/test, Terraform fmt/validate/TFLint, Trivy, Checkov, gator (the Gatekeeper policies), Conftest (no Secrets in Git), promtool, actionlint, shellcheck; owner-only `terraform plan` (+ Infracost) when `terraform/` changed |
 | `images.yml` | Merge to `main` changing `apps/` | Build → Trivy scan → push to ECR → open a PR pinning the new tags |
 | `environment.yml` | Manual, owner-only | `create-env.sh` (up) or `destroy-env.sh` (down) |
 
@@ -217,4 +230,5 @@ checks, and don't allow bypass.
 - A commit setting a wrong `DATABASE_HOST` on payment-api → HTTP 500s → alert.
 - The agent's direct patch is denied by policy.
 - An AWS call outside the agent's role returns `AccessDenied`.
-- A manifest with `privileged: true` fails the OPA check in CI.
+- A manifest with `privileged: true` fails the OPA check in CI (gator) and is
+  refused at admission (Gatekeeper).

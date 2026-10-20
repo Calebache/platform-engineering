@@ -1,0 +1,25 @@
+# Enforced: restricted pod security in the workload namespaces. A violating
+# Deployment fails its Argo CD sync; a violating Pod (e.g. an agent Job's)
+# is never created.
+#
+# Constraint kinds only exist once Gatekeeper has processed the templates,
+# so Argo CD skips the dry run for them; the Application's retry covers the
+# gap on a fresh cluster.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPlatformPodSecurity
+metadata:
+  name: workload-pod-security
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    namespaces: ["payment-api", "mcp-server", "sre-agent"]

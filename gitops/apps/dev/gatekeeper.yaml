@@ -1,0 +1,111 @@
+# OPA Gatekeeper: in-cluster admission control with OPA. The same
+# ConstraintTemplates CI tests with gator (policy/gatekeeper) are enforced
+# here, so a manifest that slips past CI (or is applied by hand) is still
+# refused. Policies live in gitops/policies/dev (the gatekeeper-policies
+# Application, wave 0).
+#
+# Webhooks are this cluster's main failure mode (CLAUDE.md), so:
+#   - Both validating webhooks fail OPEN (Ignore, 3 s timeout). If Gatekeeper
+#     is down, admission proceeds and CI remains the enforcing layer; a
+#     broken Gatekeeper never blocks unrelated resources cluster-wide.
+#   - No mutation webhook.
+#   - No Helm hooks: Argo CD applies the CRDs and the namespace itself (the
+#     chart's CRD-upgrade, namespace-label, webhook-probe and pre-delete Jobs
+#     are off), and deleting this Application removes the webhook config.
+#   - Gatekeeper rotates its own webhook certificate at run time, so Argo CD
+#     ignores the injected caBundle and the cert Secret's data instead of
+#     reverting them on every sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gatekeeper
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://open-policy-agent.github.io/gatekeeper/charts
+    chart: gatekeeper
+    targetRevision: 3.23.1
+    helm:
+      valuesObject:
+        replicas: 1
+        auditInterval: 60
+        constraintViolationsLimit: 20
+        disableMutation: true
+        validatingWebhookFailurePolicy: Ignore
+        validatingWebhookTimeoutSeconds: 3
+        # Its second webhook guards the admission.gatekeeper.sh/ignore label
+        # on every namespace CREATE/UPDATE and fails closed by default: with
+        # Gatekeeper down, Argo CD couldn't create any namespace and bring-up
+        # would stall. Fail open too; the cost is that the exemption label
+        # isn't policed while Gatekeeper is down.
+        validatingWebhookCheckIgnoreFailurePolicy: Ignore
+        logDenies: true
+        emitAdmissionEvents: true
+        admissionEventsInvolvedNamespace: true
+        emitAuditEvents: false
+        postInstall:
+          labelNamespace:
+            enabled: false
+          probeWebhook:
+            enabled: false
+        upgradeCRDs:
+          enabled: false
+        preUninstall:
+          deleteWebhookConfigurations:
+            enabled: false
+        # One replica on two small nodes. A PDB of 1 would block every node
+        # drain and autoscaler scale-down; the webhook fails open anyway.
+        pdb:
+          controllerManager:
+            minAvailable: 0
+        controllerManager:
+          exemptNamespaces: ["kube-system", "gatekeeper-system"]
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { memory: 512Mi }
+        audit:
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { memory: 512Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gatekeeper-system
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: gatekeeper-validating-webhook-configuration
+      jqPathExpressions:
+        - .webhooks[]?.clientConfig.caBundle
+    - group: ""
+      kind: Secret
+      name: gatekeeper-webhook-server-cert
+      jsonPointers:
+        - /data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # Argo CD doesn't retry a failed automated sync for the same commit on
+    # its own; on a fresh cluster transient failures (a CRD or webhook not
+    # ready yet) would otherwise leave the app stuck.
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    # The chart's namespace-label hook did this: the webhook skips its own
+    # namespace (admission.gatekeeper.sh/ignore), which runs restricted.
+    managedNamespaceMetadata:
+      labels:
+        admission.gatekeeper.sh/ignore: no-self-managing
+        pod-security.kubernetes.io/enforce: restricted
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
