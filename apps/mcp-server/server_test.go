@@ -52,7 +52,14 @@ func (f *fakeGit) readFile(_ context.Context, path string) (string, error) {
 	return "content of " + path, nil
 }
 func (f *fakeGit) pullRequest(_ context.Context, n int) (*PullRequestStatus, error) {
-	return &PullRequestStatus{Number: n, Branch: "agent/fix-db-host", State: "closed", Merged: true, MergedBy: "CalebAche"}, nil
+	return &PullRequestStatus{Number: n, Branch: "agent/fix-db-host", State: "closed", Merged: true, MergedBy: "CalebAche", MergeSHA: mergeSHA}, nil
+}
+
+const mergeSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// containsCommit: "bbbb…" is a later commit on main, "cccc…" predates the merge.
+func (f *fakeGit) containsCommit(_ context.Context, revision, commit string) (bool, error) {
+	return commit == mergeSHA && strings.HasPrefix(revision, "bbbb"), nil
 }
 func (f *fakeGit) createPullRequest(_ context.Context, in PullRequestInput) (*PullRequestResult, error) {
 	f.prs = append(f.prs, in)
@@ -167,8 +174,19 @@ func TestAgentSessionEndToEnd(t *testing.T) {
 	}
 
 	r, body = callJSON(t, s, "get_pull_request", map[string]any{"number": 7})
-	if r.IsError || !strings.Contains(body, `"merged":true`) {
+	if r.IsError || !strings.Contains(body, `"merged":true`) || strings.Contains(body, "merge_deployed") {
 		t.Fatalf("get_pull_request: %s", body)
+	}
+	// With a deployed revision: the merge itself, a descendant, an older commit.
+	for rev, want := range map[string]string{mergeSHA[:12]: "true", strings.Repeat("b", 40): "true", strings.Repeat("c", 40): "false"} {
+		r, body = callJSON(t, s, "get_pull_request", map[string]any{"number": 7, "deployed_revision": rev})
+		if r.IsError || !strings.Contains(body, `"merge_deployed":`+want) {
+			t.Fatalf("get_pull_request deployed_revision=%s: %s", rev, body)
+		}
+	}
+	r, body = callJSON(t, s, "get_pull_request", map[string]any{"number": 7, "deployed_revision": "HEAD"})
+	if !r.IsError || !strings.Contains(body, "not permitted") {
+		t.Fatalf("non-SHA revision must be refused by policy: %s", body)
 	}
 
 	rr, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "platform://services/payment-api/runbook"})

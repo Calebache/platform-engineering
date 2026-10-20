@@ -119,7 +119,7 @@ func runOrchestrator(ctx context.Context, logger *slog.Logger) error {
 	// Worker configuration is passed through verbatim; the orchestrator itself
 	// uses none of it.
 	for _, k := range []string{"BEDROCK_REGION", "MODEL_ID", "AUDIT_BUCKET", "AWS_REGION", "ENVIRONMENT", "MCP_ENDPOINT",
-		"DEMO_ATTEMPT_DIRECT_FIX", "MERGE_TIMEOUT", "VERIFY_INTERVAL", "VERIFY_ATTEMPTS", "MAX_TOOL_CALLS", "MAX_MODEL_CALLS", "MAX_OUTPUT_TOKENS"} {
+		"DEMO_ATTEMPT_DIRECT_FIX", "MERGE_TIMEOUT", "DEPLOY_WAIT_TIMEOUT", "DEPLOY_POLL_INTERVAL", "VERIFY_INTERVAL", "VERIFY_ATTEMPTS", "MAX_TOOL_CALLS", "MAX_MODEL_CALLS", "MAX_OUTPUT_TOKENS"} {
 		if v := envOr("WORKER_"+k, ""); v != "" {
 			cfg.workerEnv = append(cfg.workerEnv, corev1.EnvVar{Name: k, Value: v})
 		}

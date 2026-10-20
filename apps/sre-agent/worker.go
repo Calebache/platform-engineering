@@ -91,6 +91,7 @@ type workerConfig struct {
 	verifyAttempts                                   int
 	limits                                           limits
 	pollInterval                                     time.Duration
+	deployTimeout, deployPollInterval                time.Duration
 }
 
 func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) error {
@@ -112,6 +113,8 @@ func runInvestigate(ctx context.Context, logger *slog.Logger, args []string) err
 	cfg.verifyInterval = durationEnv("VERIFY_INTERVAL", 2*time.Minute)
 	cfg.pollInterval = durationEnv("PR_POLL_INTERVAL", time.Minute)
 	cfg.verifyAttempts = intEnv("VERIFY_ATTEMPTS", 6)
+	cfg.deployTimeout = durationEnv("DEPLOY_WAIT_TIMEOUT", 15*time.Minute)
+	cfg.deployPollInterval = durationEnv("DEPLOY_POLL_INTERVAL", 30*time.Second)
 	cfg.limits = limits{maxToolCalls: intEnv("MAX_TOOL_CALLS", 40), maxModelCalls: intEnv("MAX_MODEL_CALLS", 60), maxOutputTotal: int64(intEnv("MAX_OUTPUT_TOKENS", 120000))}
 	logger = logger.With("incident", cfg.incidentID, "service", cfg.service, "alert", cfg.alert)
 
@@ -293,7 +296,7 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 
 	// 3. Await human approval: a deterministic poll, no model involved.
 	aud.update(func(r *AuditRecord) { r.Phase = "await_approval" })
-	merged, by, err := awaitMerge(ctx, run, pr.Number, cfg.mergeTimeout, cfg.pollInterval)
+	merged, by, mergeSHA, err := awaitMerge(ctx, run, pr.Number, cfg.mergeTimeout, cfg.pollInterval)
 	if err != nil {
 		return fail("await_approval", err)
 	}
@@ -305,10 +308,28 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 		}
 		return "approval_timeout"
 	}
-	aud.update(func(r *AuditRecord) { r.DeploymentResult = "merged; awaiting Argo CD sync" })
+	// 4. Wait until the merge is live: a deterministic poll, no model. Argo CD
+	// polls Git every few minutes, so verifying on a timer alone would check
+	// the broken version.
+	aud.update(func(r *AuditRecord) {
+		r.Phase = "await_deploy"
+		r.DeploymentResult = fmt.Sprintf("merged %s; waiting for Argo CD sync", shortSHA(mergeSHA))
+	})
 	aud.flush(ctx)
+	live, deployed, err := awaitDeploy(ctx, run, cfg.service, pr.Number, mergeSHA, cfg.deployTimeout, cfg.deployPollInterval)
+	if err != nil {
+		return fail("await_deploy", err)
+	}
+	aud.update(func(r *AuditRecord) { r.DeploymentResult = deployed })
+	aud.flush(ctx)
+	if !live {
+		aud.update(func(r *AuditRecord) { r.ServiceHealth = "NOT_RECOVERED" })
+		return "not_recovered"
+	}
 
-	// 4. Verify recovery: model verdict and a deterministic gate must agree.
+	// 5. Verify recovery: model verdict and a deterministic gate must agree.
+	// Error ratios and the alert lag the rollout by minutes, so a negative
+	// verdict only counts once the attempts are used up.
 	aud.update(func(r *AuditRecord) { r.Phase = "verify" })
 	for attempt := 1; attempt <= cfg.verifyAttempts; attempt++ {
 		if !sleepCtx(ctx, cfg.verifyInterval) {
@@ -318,6 +339,8 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 		if err != nil {
 			return fail("verify", fmt.Errorf("get prompt: %w", err))
 		}
+		prompt += fmt.Sprintf("\n\nThe merge is live: %s. This is check %d of %d; the next one is in %s.",
+			deployed, attempt, cfg.verifyAttempts, cfg.verifyInterval)
 		res, err = run.phase(ctx, fmt.Sprintf("verify-%d", attempt), prompt+"\n\nWhen done, call submit_verification.",
 			toolSet(), []localTool{submitVerification})
 		if err != nil {
@@ -329,16 +352,17 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 		}
 		_ = json.Unmarshal(res.input, &v)
 		gate, detail := recoveryGate(ctx, run, cfg.service, cfg.alert)
+		note := ""
+		if v.Status == "not_recovered" && attempt < cfg.verifyAttempts {
+			note = ", treated as not_yet"
+		}
 		aud.update(func(r *AuditRecord) {
-			r.Verification = append(r.Verification, fmt.Sprintf("attempt %d: model=%s gate=%s (%s)", attempt, v.Status, gate, detail))
+			r.Verification = append(r.Verification, fmt.Sprintf("attempt %d/%d: model=%s%s gate=%s (%s)", attempt, cfg.verifyAttempts, v.Status, note, gate, detail))
 		})
 		aud.flush(ctx)
 		if v.Status == "recovered" && gate == "recovered" {
-			aud.update(func(r *AuditRecord) { r.DeploymentResult = "SUCCESS"; r.ServiceHealth = "RECOVERED" })
+			aud.update(func(r *AuditRecord) { r.ServiceHealth = "RECOVERED" })
 			return "resolved"
-		}
-		if v.Status == "not_recovered" {
-			break
 		}
 	}
 	aud.update(func(r *AuditRecord) { r.ServiceHealth = "NOT_RECOVERED" })
@@ -346,28 +370,52 @@ func investigate(ctx context.Context, cfg workerConfig, model modelClient, sessi
 }
 
 // awaitMerge polls the PR through the MCP server until it's merged, closed,
-// or the timeout passes. Returns (merged, merged_by or "closed", error).
-func awaitMerge(ctx context.Context, run *incidentRun, number int, timeout, interval time.Duration) (bool, string, error) {
+// or the timeout passes. Returns (merged, merged_by or "closed", merge commit
+// SHA, error).
+func awaitMerge(ctx context.Context, run *incidentRun, number int, timeout, interval time.Duration) (bool, string, string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		text, isErr := run.callMCP(ctx, "await_approval", "get_pull_request", json.RawMessage(fmt.Sprintf(`{"number":%d}`, number)))
+		text, isErr := run.pollMCP(ctx, "await_approval", "get_pull_request", json.RawMessage(fmt.Sprintf(`{"number":%d}`, number)))
 		if !isErr {
 			var st struct {
 				State    string `json:"state"`
 				Merged   bool   `json:"merged"`
 				MergedBy string `json:"merged_by"`
+				MergeSHA string `json:"merge_commit_sha"`
 			}
 			if json.Unmarshal([]byte(text), &st) == nil {
 				if st.Merged {
-					return true, st.MergedBy, nil
+					return true, st.MergedBy, st.MergeSHA, nil
 				}
 				if st.State == "closed" {
-					return false, "closed", nil
+					return false, "closed", "", nil
 				}
 			}
 		}
 		if time.Now().After(deadline) {
-			return false, "", nil
+			return false, "", "", nil
+		}
+		if !sleepCtx(ctx, interval) {
+			return false, "", "", ctx.Err()
+		}
+	}
+}
+
+// awaitDeploy polls until the merged change is live: the service's Argo CD
+// Application is Synced and Healthy at a revision that includes the merge
+// commit, and the Deployment has finished rolling out its newest spec.
+// Returns whether it went live within the timeout, and a line for
+// deployment_result either way.
+func awaitDeploy(ctx context.Context, run *incidentRun, service string, number int, mergeSHA string, timeout, interval time.Duration) (bool, string, error) {
+	deadline := time.Now().Add(timeout)
+	includes := map[string]bool{} // Argo CD revision -> includes the merge; immutable, so cached
+	for {
+		live, state := deployState(ctx, run, service, number, mergeSHA, includes)
+		if live {
+			return true, state, nil
+		}
+		if time.Now().After(deadline) {
+			return false, fmt.Sprintf("deploy wait timed out after %s: %s", timeout, state), nil
 		}
 		if !sleepCtx(ctx, interval) {
 			return false, "", ctx.Err()
@@ -375,11 +423,78 @@ func awaitMerge(ctx context.Context, run *incidentRun, number int, timeout, inte
 	}
 }
 
+func deployState(ctx context.Context, run *incidentRun, service string, number int, mergeSHA string, includes map[string]bool) (bool, string) {
+	if mergeSHA == "" {
+		return false, "merge commit SHA unknown"
+	}
+	text, isErr := run.pollMCP(ctx, "await_deploy", "get_service_health", json.RawMessage(fmt.Sprintf(`{"service":%q}`, service)))
+	if isErr {
+		return false, "service health unavailable"
+	}
+	var h struct {
+		Deployment *struct {
+			Desired            int32 `json:"desired"`
+			Ready              int32 `json:"ready"`
+			Updated            int32 `json:"updated"`
+			Available          int32 `json:"available"`
+			Generation         int64 `json:"generation"`
+			ObservedGeneration int64 `json:"observed_generation"`
+		} `json:"deployment"`
+		ArgoCD *struct {
+			Sync     string `json:"sync"`
+			Health   string `json:"health"`
+			Revision string `json:"revision"`
+		} `json:"argocd"`
+	}
+	if err := json.Unmarshal([]byte(text), &h); err != nil || h.ArgoCD == nil || h.Deployment == nil {
+		return false, "Argo CD or Deployment status unavailable"
+	}
+	a, d := h.ArgoCD, h.Deployment
+	if a.Sync != "Synced" || a.Revision == "" {
+		return false, fmt.Sprintf("Argo CD %s at %s, waiting for merge %s", a.Sync, shortSHA(a.Revision), shortSHA(mergeSHA))
+	}
+	in, known := includes[a.Revision]
+	if !known {
+		text, isErr := run.pollMCP(ctx, "await_deploy", "get_pull_request",
+			json.RawMessage(fmt.Sprintf(`{"number":%d,"deployed_revision":%q}`, number, a.Revision)))
+		var st struct {
+			MergeDeployed *bool `json:"merge_deployed"`
+		}
+		if isErr || json.Unmarshal([]byte(text), &st) != nil || st.MergeDeployed == nil {
+			return false, fmt.Sprintf("Argo CD synced %s; could not check it includes merge %s", shortSHA(a.Revision), shortSHA(mergeSHA))
+		}
+		in = *st.MergeDeployed
+		includes[a.Revision] = in
+	}
+	if !in {
+		return false, fmt.Sprintf("Argo CD synced %s, which doesn't include merge %s yet", shortSHA(a.Revision), shortSHA(mergeSHA))
+	}
+	synced := fmt.Sprintf("synced %s (includes merge %s)", shortSHA(a.Revision), shortSHA(mergeSHA))
+	if a.Revision == mergeSHA {
+		synced = "synced " + shortSHA(a.Revision)
+	}
+	if a.Health != "Healthy" || d.ObservedGeneration < d.Generation || d.Updated != d.Desired || d.Ready != d.Desired || d.Available != d.Desired {
+		return false, fmt.Sprintf("%s; rollout in progress (Argo CD %s, %d/%d updated, %d ready, %d available)",
+			synced, a.Health, d.Updated, d.Desired, d.Ready, d.Available)
+	}
+	return true, fmt.Sprintf("%s; rollout complete (%d/%d ready)", synced, d.Ready, d.Desired)
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	if sha == "" {
+		return "unknown revision"
+	}
+	return sha
+}
+
 // recoveryGate is the deterministic check: the error ratio is measured below
 // 1% and the alert is no longer firing. The model's verdict alone never
 // closes an incident.
 func recoveryGate(ctx context.Context, run *incidentRun, service, alert string) (string, string) {
-	text, isErr := run.callMCP(ctx, "verify-gate", "get_incident_context", json.RawMessage(fmt.Sprintf(`{"service":%q}`, service)))
+	text, isErr := run.pollMCP(ctx, "verify-gate", "get_incident_context", json.RawMessage(fmt.Sprintf(`{"service":%q}`, service)))
 	if isErr {
 		return "unknown", "incident context unavailable"
 	}

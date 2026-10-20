@@ -45,6 +45,8 @@ func TestPolicyDecisions(t *testing.T) {
 			"branch": "agent/x", "files": []any{file("gitops/workloads/dev/mcp-server/deployment.yaml", "")}}}, false, "not part of an in-scope service", ""},
 		{"PR no files", policyInput{Caller: agent, Method: "tools/call", Name: "create_pull_request", Args: map[string]any{"branch": "agent/x"}}, false, "at least one file", ""},
 		{"read agent PR", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request", Args: map[string]any{"number": 7}}, true, "", ""},
+		{"read PR with revision", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request", Args: map[string]any{"number": 7, "deployed_revision": "0123456789abcdef0123456789abcdef01234567"}}, true, "", ""},
+		{"read PR bad revision", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request", Args: map[string]any{"number": 7, "deployed_revision": "main/../x"}}, false, "not permitted", ""},
 		{"read PR without number", policyInput{Caller: agent, Method: "tools/call", Name: "get_pull_request"}, false, "not permitted", ""},
 		{"platform resource", policyInput{Caller: agent, Method: "resources/read", Name: "platform://docs/architecture"}, true, "", ""},
 		{"other resource", policyInput{Caller: agent, Method: "resources/read", Name: "file:///etc/passwd"}, false, "not permitted", ""},

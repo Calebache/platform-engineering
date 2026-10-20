@@ -42,11 +42,15 @@ type PodStatus struct {
 }
 
 type DeploymentStatus struct {
-	Desired    int32    `json:"desired"`
-	Ready      int32    `json:"ready"`
-	Updated    int32    `json:"updated"`
-	Available  int32    `json:"available"`
-	Conditions []string `json:"conditions,omitempty"`
+	Desired   int32 `json:"desired"`
+	Ready     int32 `json:"ready"`
+	Updated   int32 `json:"updated"`
+	Available int32 `json:"available"`
+	// The counts describe the spec at ObservedGeneration; while that lags
+	// Generation, the controller hasn't started rolling out the newest spec.
+	Generation         int64    `json:"generation"`
+	ObservedGeneration int64    `json:"observed_generation"`
+	Conditions         []string `json:"conditions,omitempty"`
 }
 
 type EventSummary struct {
@@ -105,6 +109,7 @@ func (k *kubeBackend) health(ctx context.Context, svc string) (*ServiceHealth, e
 func deploymentStatus(d *appsv1.Deployment) *DeploymentStatus {
 	s := &DeploymentStatus{
 		Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Available: d.Status.AvailableReplicas,
+		Generation: d.Generation, ObservedGeneration: d.Status.ObservedGeneration,
 	}
 	if d.Spec.Replicas != nil {
 		s.Desired = *d.Spec.Replicas
