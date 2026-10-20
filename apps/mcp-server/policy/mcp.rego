@@ -66,6 +66,7 @@ decision := {"allowed": false, "reason": sprintf("caller %q is not authorised to
 	input.method == "tools/call"
 	input.name == "get_pull_request"
 	object.get(args, "number", 0) > 0
+	valid_revision(object.get(args, "deployed_revision", ""))
 } else := pr_decision if {
 	input.method == "tools/call"
 	input.name == "create_pull_request"
@@ -76,6 +77,11 @@ decision := {"allowed": false, "reason": sprintf("caller %q is not authorised to
 	input.method == "prompts/get"
 	input.name in prompts
 } else := {"allowed": false, "reason": sprintf("%s %q is not permitted", [input.method, input.name])}
+
+# deployed_revision, when given, is a commit SHA and nothing else.
+valid_revision("")
+
+valid_revision(rev) if regex.match(`^[0-9a-f]{7,40}$`, rev)
 
 # --- create_pull_request ----------------------------------------------------
 

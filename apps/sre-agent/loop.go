@@ -179,6 +179,18 @@ func (r *incidentRun) checkBudget() error {
 // callMCP runs one tool through the MCP server, with the agent's own guards
 // first. Every call, allowed or not, lands in the audit record.
 func (r *incidentRun) callMCP(ctx context.Context, phase, tool string, raw json.RawMessage) (string, bool) {
+	return r.call(ctx, phase, tool, raw, true)
+}
+
+// pollMCP is callMCP for the worker's own deterministic checks (merge and
+// deploy polls, the recovery gate). They're audited and authorised the same
+// way but don't use up the model's MAX_TOOL_CALLS budget: a long wait for a
+// human merge or an Argo CD sync must not starve the verification phase.
+func (r *incidentRun) pollMCP(ctx context.Context, phase, tool string, raw json.RawMessage) (string, bool) {
+	return r.call(ctx, phase, tool, raw, false)
+}
+
+func (r *incidentRun) call(ctx context.Context, phase, tool string, raw json.RawMessage, counted bool) (string, bool) {
 	start := time.Now()
 	record := func(decision, reason string) {
 		r.audit.recordCall(ToolCall{
@@ -187,10 +199,12 @@ func (r *incidentRun) callMCP(ctx context.Context, phase, tool string, raw json.
 		})
 	}
 
-	r.toolCalls++
-	if r.limits.maxToolCalls > 0 && r.toolCalls > r.limits.maxToolCalls {
-		record("error", "tool call limit")
-		return "Tool call limit for this incident reached. Submit your result now with what you have.", true
+	if counted {
+		r.toolCalls++
+		if r.limits.maxToolCalls > 0 && r.toolCalls > r.limits.maxToolCalls {
+			record("error", "tool call limit")
+			return "Tool call limit for this incident reached. Submit your result now with what you have.", true
+		}
 	}
 	if tool == "create_pull_request" && r.prOpened != nil {
 		record("error", errPRAlreadyOn.Error())

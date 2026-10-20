@@ -21,6 +21,7 @@ type gitHost interface {
 	readFile(ctx context.Context, path string) (string, error)
 	createPullRequest(ctx context.Context, pr PullRequestInput) (*PullRequestResult, error)
 	pullRequest(ctx context.Context, number int) (*PullRequestStatus, error)
+	containsCommit(ctx context.Context, revision, commit string) (bool, error)
 }
 
 type Commit struct {
@@ -67,6 +68,9 @@ type PullRequestStatus struct {
 	MergedBy string `json:"merged_by,omitempty"`
 	MergedAt string `json:"merged_at,omitempty"`
 	MergeSHA string `json:"merge_commit_sha,omitempty"`
+	// MergeDeployed answers "does deployed_revision include the merge?", only
+	// when the caller passed a revision and the PR is merged.
+	MergeDeployed *bool `json:"merge_deployed,omitempty"`
 }
 
 var errNotAgentPR = errors.New("only pull requests from agent/* branches can be read")
@@ -241,4 +245,19 @@ func (g *githubBackend) pullRequest(ctx context.Context, number int) (*PullReque
 		st.MergeSHA = ""
 	}
 	return st, nil
+}
+
+// containsCommit reports whether revision is commit or one of its
+// descendants, i.e. whether a checkout of revision includes commit.
+func (g *githubBackend) containsCommit(ctx context.Context, revision, commit string) (bool, error) {
+	cmp, _, err := g.client.Repositories.CompareCommits(ctx, g.owner, g.repo, commit, revision, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		return false, fmt.Errorf("compare %s...%s: %w", commit, revision, err)
+	}
+	switch cmp.GetStatus() {
+	case "identical", "ahead":
+		return true, nil
+	default: // "behind" or "diverged"
+		return false, nil
+	}
 }

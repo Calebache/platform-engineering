@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -76,7 +77,8 @@ type LimitInput struct {
 }
 
 type PullRequestNumber struct {
-	Number int `json:"number" jsonschema:"pull request number returned by create_pull_request"`
+	Number           int    `json:"number" jsonschema:"pull request number returned by create_pull_request"`
+	DeployedRevision string `json:"deployed_revision,omitempty" jsonschema:"optional Git commit SHA, e.g. Argo CD's synced revision; the result then says whether it includes the merge"`
 }
 
 type PatchInput struct {
@@ -216,11 +218,24 @@ func (d *deps) addTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pull_request",
-		Description: "Status of a pull request opened from an agent/* branch: open or closed, whether it was merged, by whom and when.",
+		Description: "Status of a pull request opened from an agent/* branch: open or closed, whether it was merged, by whom and when, and its merge commit. With deployed_revision, also whether that revision includes the merge.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in PullRequestNumber) (*mcp.CallToolResult, *PullRequestStatus, error) {
 		st, err := d.git.pullRequest(ctx, in.Number)
-		return nil, st, err
+		if err != nil || in.DeployedRevision == "" || !st.Merged || st.MergeSHA == "" {
+			return nil, st, err
+		}
+		if !commitSHA.MatchString(in.DeployedRevision) {
+			return nil, nil, errors.New("deployed_revision must be a hex commit SHA")
+		}
+		deployed := strings.HasPrefix(st.MergeSHA, in.DeployedRevision)
+		if !deployed {
+			if deployed, err = d.git.containsCommit(ctx, in.DeployedRevision, st.MergeSHA); err != nil {
+				return nil, nil, err
+			}
+		}
+		st.MergeDeployed = &deployed
+		return nil, st, nil
 	})
 
 	// Exists to be refused. The policy denies it before this handler runs;
@@ -342,3 +357,5 @@ func clamp(v, fallback, max int) int {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+var commitSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)

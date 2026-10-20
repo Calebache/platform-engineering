@@ -56,6 +56,33 @@ type fakeSession struct {
 	alert    string // alert state returned by get_incident_context
 	prMerged bool
 	reads    []string // resource URIs that reached the server
+
+	// Optional sequences, one entry per call; the last entry repeats.
+	health    []fakeHealth // get_service_health; default: live at mergeSHA
+	errRatios []float64    // get_incident_context, overriding errRatio
+	alerts    []string     // get_incident_context, overriding alert
+	compares  []string     // deployed_revision values sent to get_pull_request
+	nHealth   int
+	nContext  int
+}
+
+// fakeHealth is one Argo CD + Deployment status. Revisions starting "bbbb"
+// include the merge (later commits on main); others don't.
+type fakeHealth struct {
+	sync, health, revision         string
+	desired, updated, ready, avail int
+	generation, observedGeneration int
+}
+
+const mergeSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+var liveHealth = fakeHealth{"Synced", "Healthy", mergeSHA, 2, 2, 2, 2, 3, 3}
+
+func nth[T any](seq []T, i int, fallback T) T {
+	if len(seq) == 0 {
+		return fallback
+	}
+	return seq[min(i, len(seq)-1)]
 }
 
 const runbookURI = "platform://services/payment-api/runbook"
@@ -106,13 +133,33 @@ func (f *fakeSession) callTool(_ context.Context, name string, args map[string]a
 		f.prs++
 		return ok(map[string]any{"number": 42, "url": "https://github.com/x/pull/42", "branch": args["branch"]}), nil
 	case "get_pull_request":
-		return ok(map[string]any{"number": 42, "state": map[bool]string{true: "closed", false: "open"}[f.prMerged], "merged": f.prMerged, "merged_by": "CalebAche"}), nil
-	case "get_incident_context":
-		alerts := []any{}
-		if f.alert != "" {
-			alerts = append(alerts, map[string]any{"name": "PaymentApiHighErrorRate", "state": f.alert})
+		st := map[string]any{"number": 42, "state": map[bool]string{true: "closed", false: "open"}[f.prMerged], "merged": f.prMerged, "merged_by": "CalebAche"}
+		if f.prMerged {
+			st["merge_commit_sha"] = mergeSHA
+			if rev, _ := args["deployed_revision"].(string); rev != "" {
+				f.compares = append(f.compares, rev)
+				st["merge_deployed"] = rev == mergeSHA || strings.HasPrefix(rev, "bbbb")
+			}
 		}
-		return ok(map[string]any{"alerts": alerts, "metrics": map[string]any{"metrics": map[string]any{"error_ratio": map[string]any{"current": f.errRatio}}}}), nil
+		return ok(st), nil
+	case "get_service_health":
+		h := nth(f.health, f.nHealth, liveHealth)
+		f.nHealth++
+		return ok(map[string]any{
+			"service": "payment-api",
+			"deployment": map[string]any{"desired": h.desired, "updated": h.updated, "ready": h.ready, "available": h.avail,
+				"generation": h.generation, "observed_generation": h.observedGeneration},
+			"argocd": map[string]any{"sync": h.sync, "health": h.health, "revision": h.revision},
+		}), nil
+	case "get_incident_context":
+		alert := nth(f.alerts, f.nContext, f.alert)
+		ratio := nth(f.errRatios, f.nContext, f.errRatio)
+		f.nContext++
+		alerts := []any{}
+		if alert != "" {
+			alerts = append(alerts, map[string]any{"name": "PaymentApiHighErrorRate", "state": alert})
+		}
+		return ok(map[string]any{"alerts": alerts, "metrics": map[string]any{"metrics": map[string]any{"error_ratio": map[string]any{"current": ratio}}}}), nil
 	}
 	return ok(map[string]any{"tool": name, "ok": true}), nil
 }
@@ -138,6 +185,7 @@ func testCfg() workerConfig {
 		service: "payment-api", alert: "PaymentApiHighErrorRate", incidentID: "inc-test", environment: "dev",
 		modelID: defaultModel, mergeTimeout: time.Second, pollInterval: time.Millisecond,
 		verifyInterval: time.Millisecond, verifyAttempts: 2,
+		deployTimeout: time.Second, deployPollInterval: time.Millisecond,
 		limits: limits{maxToolCalls: 40, maxModelCalls: 60, maxOutputTotal: 100000},
 	}
 }
@@ -197,7 +245,7 @@ func TestDatabaseHostIncidentEndToEnd(t *testing.T) {
 	if rec.ProposedAction != "https://github.com/x/pull/42" || rec.HumanApproval == nil || !*rec.HumanApproval || rec.ApprovedBy != "CalebAche" {
 		t.Errorf("PR/approval not recorded: %+v", rec)
 	}
-	if rec.ServiceHealth != "RECOVERED" || rec.DeploymentResult != "SUCCESS" || rec.PolicyResult != "PASS" {
+	if rec.ServiceHealth != "RECOVERED" || rec.DeploymentResult != "synced aaaaaaaaaaaa; rollout complete (2/2 ready)" || rec.PolicyResult != "PASS" {
 		t.Errorf("verification not recorded: health=%s deploy=%s", rec.ServiceHealth, rec.DeploymentResult)
 	}
 	// The second PR was stopped by the agent itself, before the MCP server.
@@ -340,6 +388,109 @@ func TestGateOverrulesModel(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(rec.Verification, "|"), "gate=not_recovered (error_ratio=0.3000)") {
 		t.Errorf("gate result not recorded: %v", rec.Verification)
+	}
+}
+
+// prTurns take an incident straight to an opened PR.
+func prTurns() []string {
+	return []string{
+		toolUse("submit_findings", map[string]any{"hypothesis": "h", "confidence": "high", "evidence": []string{"e"}, "remediation_path": "pull_request"}),
+		toolUse("create_pull_request", map[string]any{"branch": "agent/x", "title": "t", "body": "b", "files": []map[string]string{{"path": "gitops/workloads/dev/payment-api/d.yaml", "content": "x"}}}),
+		toolUse("submit_remediation", map[string]any{"status": "pull_request_opened", "summary": "s"}),
+	}
+}
+
+// Verification starts only once Argo CD has synced a revision that includes
+// the merge and the rollout has finished; until then the old, broken version
+// is what's running.
+func TestVerifyWaitsForSyncAndRollout(t *testing.T) {
+	sess := &fakeSession{errRatio: 0.002, prMerged: true, health: []fakeHealth{
+		{"Synced", "Healthy", strings.Repeat("c", 40), 2, 2, 2, 2, 2, 2},     // Argo CD hasn't polled Git yet
+		{"Synced", "Healthy", strings.Repeat("c", 40), 2, 2, 2, 2, 2, 2},     // same revision: no second compare
+		{"OutOfSync", "Healthy", strings.Repeat("c", 40), 2, 2, 2, 2, 2, 2},  // it noticed the merge
+		{"Synced", "Healthy", strings.Repeat("b", 40), 2, 2, 2, 2, 3, 2},     // applied; controller hasn't seen it
+		{"Synced", "Progressing", strings.Repeat("b", 40), 2, 1, 3, 2, 3, 3}, // rolling
+		{"Synced", "Healthy", strings.Repeat("b", 40), 2, 2, 2, 2, 3, 3},     // live
+	}}
+	cfg := testCfg()
+	cfg.limits.maxToolCalls = 2 // the runbook pre-fetch and the PR; polls don't count
+	turns := append(prTurns(), toolUse("submit_verification", map[string]any{"status": "recovered", "evidence": []string{"0.2%"}}))
+	outcome, rec, _, _ := runIncident(t, cfg, turns, sess)
+	if outcome != "resolved" {
+		t.Fatalf("outcome=%s err=%q deploy=%q verification=%v", outcome, rec.Error, rec.DeploymentResult, rec.Verification)
+	}
+	if want := "synced bbbbbbbbbbbb (includes merge aaaaaaaaaaaa); rollout complete (2/2 ready)"; rec.DeploymentResult != want {
+		t.Errorf("deployment_result %q, want %q", rec.DeploymentResult, want)
+	}
+	if got := strings.Join(sess.compares, ","); got != strings.Repeat("c", 40)+","+strings.Repeat("b", 40) {
+		t.Errorf("revisions compared: %s", got)
+	}
+	// Every deploy poll happened before the first verification step.
+	var phases []string
+	for _, c := range rec.ToolCalls {
+		if len(phases) == 0 || phases[len(phases)-1] != c.Phase {
+			phases = append(phases, c.Phase)
+		}
+	}
+	if got := strings.Join(phases, ","); got != "investigate,remediate,await_approval,await_deploy,verify-1,verify-gate" {
+		t.Errorf("phase order: %s", got)
+	}
+}
+
+// Right after the rollout the alert is still firing (for: 2m) and the 5m
+// error ratio is still high. A negative verdict then is "not yet", not the end.
+func TestEarlyNotRecoveredThenRecovers(t *testing.T) {
+	sess := &fakeSession{prMerged: true, errRatios: []float64{0.2, 0.004}, alerts: []string{"firing", ""}}
+	cfg := testCfg()
+	cfg.verifyAttempts = 3
+	turns := append(prTurns(),
+		toolUse("submit_verification", map[string]any{"status": "not_recovered", "evidence": []string{"alert firing"}}),
+		toolUse("submit_verification", map[string]any{"status": "recovered", "evidence": []string{"0.4%"}}),
+	)
+	outcome, rec, model, _ := runIncident(t, cfg, turns, sess)
+	if outcome != "resolved" || rec.ServiceHealth != "RECOVERED" {
+		t.Fatalf("outcome=%s health=%s verification=%v", outcome, rec.ServiceHealth, rec.Verification)
+	}
+	v := strings.Join(rec.Verification, "|")
+	if !strings.Contains(v, "attempt 1/3: model=not_recovered, treated as not_yet gate=not_recovered (alert still firing)") ||
+		!strings.Contains(v, "attempt 2/3: model=recovered gate=recovered (error_ratio=0.0040, alert not firing)") {
+		t.Errorf("verification: %v", rec.Verification)
+	}
+	// The model is told where it stands.
+	first, _ := json.Marshal(model.requests[3].Messages[0])
+	if !strings.Contains(string(first), "The merge is live: synced aaaaaaaaaaaa; rollout complete (2/2 ready). This is check 1 of 3") {
+		t.Errorf("verify prompt lacks deploy state and attempt: %s", first)
+	}
+}
+
+// Only the last attempt's negative verdict ends the incident.
+func TestNotRecoveredAfterAttemptsExhausted(t *testing.T) {
+	sess := &fakeSession{prMerged: true, errRatio: 0.2, alert: "firing"}
+	notYet := toolUse("submit_verification", map[string]any{"status": "not_recovered", "evidence": []string{"still 20%"}})
+	outcome, rec, model, _ := runIncident(t, testCfg(), append(prTurns(), notYet, notYet), sess)
+	if outcome != "not_recovered" || len(model.requests) != 5 {
+		t.Fatalf("outcome=%s model calls=%d", outcome, len(model.requests))
+	}
+	if v := strings.Join(rec.Verification, "|"); !strings.Contains(v, "attempt 2/2: model=not_recovered gate") {
+		t.Errorf("verification: %v", rec.Verification)
+	}
+}
+
+// If the merge never goes live, the model is never asked and the record says
+// why.
+func TestDeployWaitTimesOut(t *testing.T) {
+	sess := &fakeSession{prMerged: true, health: []fakeHealth{{"Synced", "Healthy", strings.Repeat("c", 40), 2, 2, 2, 2, 2, 2}}}
+	cfg := testCfg()
+	cfg.deployTimeout = 5 * time.Millisecond
+	outcome, rec, _, _ := runIncident(t, cfg, prTurns(), sess) // no verify turns: the model must not be called
+	if outcome != "not_recovered" || rec.ServiceHealth != "NOT_RECOVERED" || len(rec.Verification) != 1 {
+		t.Fatalf("outcome=%s health=%s verification=%v", outcome, rec.ServiceHealth, rec.Verification)
+	}
+	if want := "deploy wait timed out after 5ms: Argo CD synced cccccccccccc, which doesn't include merge aaaaaaaaaaaa yet"; rec.DeploymentResult != want {
+		t.Errorf("deployment_result %q, want %q", rec.DeploymentResult, want)
+	}
+	if len(sess.compares) != 1 {
+		t.Errorf("revision compared %d times, want once (cached)", len(sess.compares))
 	}
 }
 

@@ -123,9 +123,12 @@ Alertmanager ──webhook──> orchestrator ──creates──> incident Job
    (`patch_deployment` → `required_path: create_pull_request`); in demo mode
    the agent is told to try it first, so the refusal is visible.
 5. A human reviews and merges the PR; the worker polls for the merge.
-6. Argo CD deploys the fix; the worker verifies recovery. Both the model's
-   verdict and a deterministic check (error ratio under 1%, alert not
-   firing) must agree before the incident is resolved.
+6. Argo CD deploys the fix. The worker first waits, without the model, until
+   the service's Application is Synced and Healthy at a revision that
+   includes the merge commit and the rollout is complete; then it verifies
+   recovery on a fixed schedule. Both the model's verdict and a deterministic
+   check (error ratio under 1%, alert not firing) must agree before the
+   incident is resolved; a negative verdict counts only on the last check.
 7. The worker writes the audit record to S3 at every phase, and reports its
    outcome in the Job's termination message. Anything other than
    "resolved" or "no action" raises `SreAgentEscalation`, one alert per

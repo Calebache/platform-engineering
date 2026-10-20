@@ -67,6 +67,17 @@ spec:
               value: "true"
             - name: WORKER_MERGE_TIMEOUT
               value: 45m
+            # After the merge, wait (no model) until Argo CD has synced a
+            # revision that includes it and the rollout is complete. Argo CD
+            # polls Git every ~3 minutes.
+            - name: WORKER_DEPLOY_WAIT_TIMEOUT
+              value: 15m
+            # Checks after the rollout. 6 x 2m covers the alert's for: 2m and
+            # the 5m rate window of error_ratio.
+            - name: WORKER_VERIFY_INTERVAL
+              value: 2m
+            - name: WORKER_VERIFY_ATTEMPTS
+              value: "6"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
