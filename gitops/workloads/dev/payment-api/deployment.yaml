@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: payment-api
-          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:700726ac3642
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/payment-api:76a18435b364
           args: ["serve"]
           ports:
             - name: http
