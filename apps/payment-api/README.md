@@ -70,7 +70,7 @@ and `duration_ms`. A database failure logs:
 
 Alerts (`gitops/workloads/dev/payment-api/monitoring.yaml`):
 
-- `PaymentApiHighErrorRate` — over 5% of non-probe requests return 5xx for 2 minutes.
+- `PaymentApiHighErrorRate` — 3 or more non-probe requests returned 5xx in the last minute (evaluated every 15 s, fires immediately).
 - `PaymentApiDown` — no instance scraped successfully for 2 minutes.
 
 ## Load generator
