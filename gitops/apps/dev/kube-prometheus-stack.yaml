@@ -106,6 +106,9 @@ spec:
                     - service=~"payment-api"
                     - severity="critical"
                     - alertname!~"SreAgent.*"
+                  # Start the investigation 10 s after the alert fires,
+                  # not 30 s.
+                  group_wait: 10s
             receivers:
               - name: "null"
               - name: sre-agent

@@ -2,7 +2,7 @@ module github.com/Calebache/platform-engineering/apps/sre-agent
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.78.0

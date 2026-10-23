@@ -437,7 +437,7 @@ func TestVerifyWaitsForSyncAndRollout(t *testing.T) {
 	}
 }
 
-// Right after the rollout the alert is still firing (for: 2m) and the 5m
+// Right after the rollout the alert may still be firing and the 5m
 // error ratio is still high. A negative verdict then is "not yet", not the end.
 func TestEarlyNotRecoveredThenRecovers(t *testing.T) {
 	sess := &fakeSession{prMerged: true, errRatios: []float64{0.2, 0.004}, alerts: []string{"firing", ""}}

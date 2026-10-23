@@ -7,7 +7,7 @@ Service reference: [`apps/payment-api/README.md`](../../apps/payment-api/README.
 
 | Alert | Fires when |
 |---|---|
-| `PaymentApiHighErrorRate` | More than 5% of API requests (probes excluded) return 5xx for 2 minutes |
+| `PaymentApiHighErrorRate` | 3 or more API requests (probes excluded) returned 5xx in the last minute; fires immediately, no `for` delay |
 | `PaymentApiDown` | No payment-api instance has been scraped successfully for 2 minutes |
 
 ## Triage

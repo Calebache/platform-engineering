@@ -20,23 +20,28 @@ metadata:
 spec:
   groups:
     - name: payment-api
+      # Evaluated every 15 s (the scrape interval), not the global 30 s, so
+      # the incident starts within about a minute of the first errors.
+      interval: 15s
       rules:
         - alert: PaymentApiHighErrorRate
-          # Share of API requests (health probes excluded) answered with 5xx.
+          # 3 or more API responses (health probes excluded) with a 5xx in the
+          # last minute, firing at once (no `for`). Tuned for a fast demo: in
+          # production you'd alert on an SLO burn rate instead, since every
+          # firing starts a (billed) agent investigation. Keep this the only
+          # critical error-rate alert: the orchestrator de-duplicates by alert
+          # name, so a second one would start a second Job for one outage.
           expr: |
-            sum(rate(http_requests_total{namespace="payment-api", service="payment-api", code=~"5..", route!~"GET /(healthz|readyz)"}[2m]))
-              /
-            sum(rate(http_requests_total{namespace="payment-api", service="payment-api", route!~"GET /(healthz|readyz)"}[2m]))
-              > 0.05
-          for: 2m
+            sum(increase(http_requests_total{namespace="payment-api", service="payment-api", code=~"5..", route!~"GET /(healthz|readyz)"}[1m]))
+              >= 3
           labels:
             severity: critical
             service: payment-api
           annotations:
-            summary: payment-api is failing more than 5% of requests
+            summary: payment-api returned 3 or more server errors in the last minute
             description: >-
-              {{ $value | humanizePercentage }} of payment-api requests returned
-              HTTP 5xx over the last 2 minutes.
+              {{ $value | humanize }} payment-api requests returned HTTP 5xx in
+              the last minute.
         - alert: PaymentApiDown
           expr: absent(up{namespace="payment-api", service="payment-api"} == 1)
           for: 2m
