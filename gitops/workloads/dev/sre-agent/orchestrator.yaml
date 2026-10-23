@@ -24,7 +24,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: orchestrator
-          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:50a1e0867613
+          image: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:76a18435b364
           args: ["orchestrator"]
           ports:
             - name: http
@@ -38,7 +38,7 @@ spec:
             # Incident Jobs run this same image (the admission policy only
             # allows the agent's own ECR repository).
             - name: AGENT_IMAGE
-              value: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:50a1e0867613
+              value: 103544553431.dkr.ecr.ca-central-1.amazonaws.com/sre-agent:76a18435b364
             - name: ALLOWED_SERVICES
               value: payment-api
             - name: INCIDENT_COOLDOWN
